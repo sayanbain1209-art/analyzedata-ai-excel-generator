@@ -737,4 +737,32 @@ elif page == "📁 Templates":
         st.session_state.ai_result = ""
         st.success(
        
-       
+                   "Template তৈরি হয়েছে। AI Excel Generator পেজে যান।"
+        )
+
+
+# ---------------------------------------------------------
+# ABOUT
+# ---------------------------------------------------------
+else:
+    st.title("ℹ️ About AnalyzeData.io")
+    st.write(
+        "AnalyzeData.io একটি data-to-Excel workbook builder।"
+    )
+
+    st.markdown(
+        """
+        **যা করতে পারবেন**
+
+        - CSV, XLSX এবং TSV import
+        - Data paste ও cell editing
+        - Salary calculation
+        - Heading, filter ও formatting-সহ Excel download
+        - Gemini API key থাকলে AI data analysis
+        """
+    )
+
+    st.info(
+        "AI ব্যবহার করতে Streamlit Cloud → App settings → Secrets-এ "
+        "GEMINI_API_KEY যোগ করুন। API key কখনো app.py-তে লিখবেন না।"
+    )
