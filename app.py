@@ -1,4 +1,5 @@
 import io
+import os
 import re
 import csv
 from datetime import date
@@ -7,233 +8,352 @@ import pandas as pd
 import streamlit as st
 from openpyxl.styles import Font, PatternFill, Border, Side, Alignment
 from openpyxl.utils import get_column_letter
-from openpyxl.worksheet.table import Table, TableStyleInfo
 
-st.set_page_config(page_title="AnalyzeData.io | AI Excel Generator", page_icon="📊", layout="wide", initial_sidebar_state="expanded")
+# -------------------- Page setup --------------------
+st.set_page_config(
+    page_title="AnalyzeData.io | AI Excel Generator",
+    page_icon="📊",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
 
+# Strong contrast: readable inputs, sidebar, tables and buttons.
 st.markdown("""
 <style>
-:root { --navy:#12345a; --blue:#2563eb; }
-.stApp { background:#f6f8fc; color:#172b45; }
-[data-testid="stHeader"] { background:rgba(246,248,252,.95); }
-[data-testid="stSidebar"] { background:#102b4c; }
-[data-testid="stSidebar"] * { color:#f8fbff !important; }
-.stApp, .stApp p, .stApp label, .stApp h1, .stApp h2, .stApp h3, .stApp [data-testid="stMarkdownContainer"] { color:#172b45; }
-.stApp input, .stApp textarea, .stApp [data-baseweb="select"] * { color:#172b45 !important; }
-.hero { padding:1.4rem 1.5rem; border-radius:18px; background:linear-gradient(120deg,#102b4c,#2563eb); color:white; margin-bottom:1rem; }
-.hero h1,.hero p { color:white !important; }
-.metric-card { background:white; border:1px solid #e5eaf2; border-radius:14px; padding:1rem; min-height:95px; }
-.metric-label { color:#64748b; font-size:.86rem; }.metric-value { color:#12345a; font-size:1.5rem; font-weight:750; }
-.hint { color:#526783; font-size:.95rem; }
-div.stButton > button[kind="primary"] { background:#2563eb; border-color:#2563eb; border-radius:10px; font-weight:650; min-height:2.8rem; }
+:root { color-scheme: light; }
+.stApp { background: #f4f7fc; color: #172b45; }
+[data-testid="stSidebar"] { background: #102b4c; }
+[data-testid="stSidebar"] * { color: #f4f8ff !important; }
+[data-testid="stSidebar"] [data-testid="stRadio"] label {
+    background: rgba(255,255,255,.07); border: 1px solid rgba(255,255,255,.13);
+    border-radius: 10px; padding: .55rem .7rem; margin: .18rem 0;
+}
+[data-testid="stSidebar"] [data-testid="stRadio"] label:has(input:checked) {
+    background: #2563eb; border-color: #78a7ff;
+}
+.hero {
+    padding: 2rem; border-radius: 20px; color: white;
+    background: linear-gradient(120deg,#102b4c,#2563eb);
+    margin-bottom: 1rem;
+}
+.hero h1, .hero p { color: white !important; }
+.metric-card {
+    background: white; border: 1px solid #dce5f1; border-radius: 14px;
+    padding: 1rem; min-height: 105px; box-shadow: 0 2px 8px rgba(16,43,76,.04);
+}
+.metric-label { color:#526783; font-size:.85rem; }
+.metric-value { color:#102b4c; font-size:1.55rem; font-weight:750; }
+h1,h2,h3,p,label { color:#172b45; }
+.stTextArea textarea, .stTextInput input, .stNumberInput input {
+    color:#172b45 !important; background:#ffffff !important;
+    border:1px solid #aebed2 !important;
+}
+.stSelectbox div[data-baseweb="select"] { background:#fff; }
+.stButton button, .stDownloadButton button {
+    background:#2563eb; color:#fff; border:1px solid #2563eb;
+    border-radius:10px; font-weight:650; min-height:2.65rem;
+}
+.stButton button:hover, .stDownloadButton button:hover {
+    background:#1748b8; color:#fff; border-color:#1748b8;
+}
+div[data-testid="stDataFrame"], div[data-testid="stDataEditor"] {
+    background:white; border-radius:12px;
+}
+.small-note { color:#526783; font-size:.9rem; }
 </style>
 """, unsafe_allow_html=True)
 
-SALARY_COLUMNS = ["Employee ID", "Employee Name", "Department", "Basic Salary", "HRA", "Other Allowance", "Gross Salary", "Deduction", "Net Salary"]
-
-
-def prompt_to_columns(prompt):
-    match = re.search(r"(?:columns?|fields?)\s*[:\-]\s*(.+)", prompt, flags=re.I | re.S)
-    if not match:
-        return []
-    candidate = re.sub(r"[.。].*$", "", match.group(1).split("\n")[0])
-    cols = [x.strip(" \t:-•") for x in re.split(r",|;|\band\b|&", candidate, flags=re.I)]
-    return list(dict.fromkeys([x for x in cols if 1 < len(x) < 50]))[:25]
-
-
-def parse_pasted_data(raw):
-    """Read pasted CSV, tab-separated, or pipe-separated rows into a dataframe."""
-    raw = raw.strip()
+# -------------------- Helpers --------------------
+def parse_pasted_data(raw: str) -> pd.DataFrame:
+    """Parse CSV, TSV, pipe-separated, or whitespace-delimited pasted data."""
+    raw = (raw or "").strip()
     if not raw:
-        raise ValueError("প্রথমে কর্মচারীদের data paste করুন।")
-    lines = [line for line in raw.splitlines() if line.strip()]
-    sample = "\n".join(lines[:5])
+        return pd.DataFrame()
+    sample = "\n".join(raw.splitlines()[:8])
     try:
-        dialect = csv.Sniffer().sniff(sample, delimiters="\t,;|")
-        delimiter = dialect.delimiter
-    except csv.Error:
-        delimiter = "\t" if "\t" in sample else ("|" if "|" in sample else ",")
-    rows = list(csv.reader(io.StringIO("\n".join(lines)), delimiter=delimiter))
-    rows = [[cell.strip() for cell in row] for row in rows]
-    rows = [row for row in rows if any(row)]
-    if len(rows) < 2:
-        raise ValueError("Header-সহ অন্তত ১টি data row দিন। প্রতিটি column tab, comma বা | দিয়ে আলাদা করুন।")
-    width = len(rows[0])
-    rows = [row for row in rows if len(row) == width]
-    if len(rows) < 2:
-        raise ValueError("সব row-তে একই সংখ্যক column নেই। আবার paste করুন।")
-    headers = rows[0]
-    df = pd.DataFrame(rows[1:], columns=headers)
-    return clean_and_calculate(df)
+        dialect = csv.Sniffer().sniff(sample, delimiters=",\t;|")
+        df = pd.read_csv(io.StringIO(raw), sep=dialect.delimiter, engine="python")
+        if len(df.columns) > 1:
+            return clean_dataframe(df)
+    except Exception:
+        pass
+    # Fall back to pandas' delimiter inference.
+    try:
+        df = pd.read_csv(io.StringIO(raw), sep=None, engine="python")
+        if len(df.columns) > 1:
+            return clean_dataframe(df)
+    except Exception:
+        pass
+    lines = [re.split(r"\s{2,}", line.strip()) for line in raw.splitlines() if line.strip()]
+    if len(lines) >= 2 and len({len(x) for x in lines}) == 1 and len(lines[0]) > 1:
+        return clean_dataframe(pd.DataFrame(lines[1:], columns=lines[0]))
+    return clean_dataframe(pd.DataFrame({"Data": raw.splitlines()}))
 
-
-def clean_and_calculate(df):
+def clean_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
-    df.columns = [str(c).strip() for c in df.columns]
-    # Normalize common salary column names.
-    aliases = {
-        "name": "Employee Name", "employee name": "Employee Name", "employee id": "Employee ID",
-        "basic": "Basic Salary", "basic salary": "Basic Salary", "hra": "HRA",
-        "other allowance": "Other Allowance", "allowance": "Other Allowance",
-        "deduction": "Deduction", "department": "Department"
-    }
-    rename = {c: aliases[c.strip().lower()] for c in df.columns if c.strip().lower() in aliases}
-    df = df.rename(columns=rename)
-    for col in ["Basic Salary", "HRA", "Other Allowance", "Deduction"]:
-        if col in df.columns:
-            df[col] = pd.to_numeric(df[col].astype(str).str.replace(",", "", regex=False).str.replace("₹", "", regex=False).str.strip(), errors="coerce").fillna(0)
-    if all(c in df.columns for c in ["Basic Salary", "HRA", "Other Allowance", "Deduction"]):
-        df["Gross Salary"] = df["Basic Salary"] + df["HRA"] + df["Other Allowance"]
-        df["Net Salary"] = df["Gross Salary"] - df["Deduction"]
-        ordered = [c for c in SALARY_COLUMNS if c in df.columns]
-        extras = [c for c in df.columns if c not in ordered]
-        df = df[ordered + extras]
-    return df
+    df.columns = [str(c).strip() or f"Column_{i+1}" for i, c in enumerate(df.columns)]
+    df = df.loc[:, ~pd.Index(df.columns).duplicated()]
+    df = df.dropna(how="all")
+    return df.reset_index(drop=True)
 
-
-def make_starter_dataframe(prompt, template):
-    templates = {
-        "Employee Details": ["Employee ID", "Employee Name", "Department", "Designation", "Phone", "Joining Date"],
-        "Salary Calculator": SALARY_COLUMNS,
-        "Attendance Sheet": ["Employee ID", "Employee Name", "Working Days", "Present Days", "Absent", "Attendance %"],
-        "Student Marks": ["Student ID", "Student Name", "Subject", "Total Marks", "Obtained Marks", "Percentage"],
-    }
-    if template in templates:
-        return pd.DataFrame(columns=templates[template])
-    cols = prompt_to_columns(prompt)
-    return pd.DataFrame(columns=cols or ["ID", "Name", "Category", "Date", "Notes"])
-
-
-def parse_uploaded_file(uploaded_file):
-    name, raw = uploaded_file.name.lower(), uploaded_file.getvalue()
+def read_upload(uploaded):
+    name = uploaded.name.lower()
+    data = uploaded.getvalue()
+    if name.endswith((".xlsx", ".xlsm")):
+        return clean_dataframe(pd.read_excel(io.BytesIO(data)))
+    if name.endswith(".xls"):
+        return clean_dataframe(pd.read_excel(io.BytesIO(data)))
     if name.endswith(".csv"):
-        return clean_and_calculate(pd.read_csv(io.BytesIO(raw)))
-    if name.endswith((".xlsx", ".xls")):
-        return clean_and_calculate(pd.read_excel(io.BytesIO(raw)))
-    raise ValueError("এই সংস্করণে CSV এবং XLSX ফাইল সমর্থিত।")
+        try:
+            return clean_dataframe(pd.read_csv(io.BytesIO(data), sep=None, engine="python"))
+        except UnicodeDecodeError:
+            return clean_dataframe(pd.read_csv(io.BytesIO(data), encoding="latin-1", sep=None, engine="python"))
+    if name.endswith(".tsv"):
+        return clean_dataframe(pd.read_csv(io.BytesIO(data), sep="\t"))
+    raise ValueError("এই ফাইল ফরম্যাট সমর্থিত নয়। CSV, XLSX বা XLS ব্যবহার করুন।")
 
+def salary_calculations(df: pd.DataFrame) -> pd.DataFrame:
+    out = df.copy()
+    normalized = {str(c).strip().lower(): c for c in out.columns}
+    def find(*names):
+        for n in names:
+            if n in normalized:
+                return normalized[n]
+        return None
+    basic = find("basic salary", "basic", "basic pay")
+    hra = find("hra", "house rent allowance")
+    allowance = find("other allowance", "allowance", "other allowances")
+    deduction = find("deduction", "deductions")
+    gross = find("gross salary", "gross")
+    net = find("net salary", "net pay", "net")
+    numeric_cols = [c for c in [basic, hra, allowance, deduction, gross, net] if c]
+    for c in numeric_cols:
+        out[c] = pd.to_numeric(out[c].astype(str).str.replace(",", "", regex=False), errors="coerce").fillna(0)
+    if basic:
+        if not hra:
+            hra = "HRA"
+            out[hra] = 0
+        if not allowance:
+            allowance = "Other Allowance"
+            out[allowance] = 0
+        if not gross:
+            gross = "Gross Salary"
+        out[gross] = out[basic] + out[hra] + out[allowance]
+        if not deduction:
+            deduction = "Deduction"
+            out[deduction] = 0
+        if not net:
+            net = "Net Salary"
+        out[net] = out[gross] - out[deduction]
+    return out
 
-def style_workbook(df):
-    output = io.BytesIO()
-    safe_df = df.copy().fillna("")
-    with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        safe_df.to_excel(writer, index=False, sheet_name="Salary Report" if "Net Salary" in safe_df.columns else "Generated Data")
-        ws = writer.sheets[writer.book.sheetnames[0]]
+def make_excel(df: pd.DataFrame, sheet_name="Data") -> bytes:
+    buffer = io.BytesIO()
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        df.to_excel(writer, index=False, sheet_name=sheet_name[:31])
+        ws = writer.sheets[sheet_name[:31]]
         ws.freeze_panes = "A2"
         ws.auto_filter.ref = ws.dimensions
-        ws.sheet_view.showGridLines = False
-        ws.row_dimensions[1].height = 30
-        header_fill = PatternFill("solid", fgColor="17365D")
-        header_font = Font(name="Aptos", bold=True, color="FFFFFF", size=11)
-        edge = Side(style="thin", color="D7E2F0")
+        header_fill = PatternFill("solid", fgColor="173F73")
+        header_font = Font(bold=True, color="FFFFFF")
+        thin_blue = Side(style="thin", color="D8E3F0")
         for cell in ws[1]:
-            cell.fill, cell.font = header_fill, header_font
-            cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-            cell.border = Border(left=edge, right=edge, top=edge, bottom=edge)
-        for row in ws.iter_rows(min_row=2):
-            for cell in row:
-                cell.font = Font(name="Aptos", size=10, color="243247")
-                cell.alignment = Alignment(vertical="center", wrap_text=True)
-                cell.border = Border(left=edge, right=edge, top=edge, bottom=edge)
-                if cell.row % 2 == 0:
-                    cell.fill = PatternFill("solid", fgColor="F1F6FC")
-        for idx, cells in enumerate(ws.columns, 1):
-            longest = max([len(str(c.value or "")) for c in cells] + [10])
-            ws.column_dimensions[get_column_letter(idx)].width = min(max(longest + 3, 14), 32)
-        if ws.max_row >= 2 and ws.max_column >= 1:
-            table = Table(displayName="GeneratedTable", ref=f"A1:{get_column_letter(ws.max_column)}{ws.max_row}")
-            table.tableStyleInfo = TableStyleInfo(name="TableStyleMedium2", showRowStripes=True, showColumnStripes=False)
-            ws.add_table(table)
-        ws.sheet_properties.pageSetUpPr.fitToPage = True
-        ws.page_setup.fitToWidth, ws.page_setup.fitToHeight, ws.page_setup.orientation = 1, 0, "landscape"
-        # Add a department summary on a second sheet for salary reports.
-        if all(c in safe_df.columns for c in ["Department", "Net Salary"]):
-            summary = safe_df.groupby("Department", dropna=False)["Net Salary"].sum().reset_index(name="Total Net Salary")
-            summary.to_excel(writer, index=False, sheet_name="Department Summary")
-            sw = writer.sheets["Department Summary"]
-            sw.freeze_panes = "A2"
-            for cell in sw[1]:
-                cell.fill, cell.font = header_fill, header_font
-            for col_idx, cells in enumerate(sw.columns, 1):
-                sw.column_dimensions[get_column_letter(col_idx)].width = max(18, max(len(str(c.value or "")) for c in cells) + 3)
-    output.seek(0)
-    return output.getvalue()
+            cell.fill = header_fill
+            cell.font = header_font
+            cell.alignment = Alignment(horizontal="center", vertical="center")
+            cell.border = Border(bottom=thin_blue)
+        for col_idx, col_cells in enumerate(ws.columns, 1):
+            values = [len(str(c.value)) if c.value is not None else 0 for c in col_cells]
+            width = min(max(max(values, default=10) + 3, 12), 34)
+            ws.column_dimensions[get_column_letter(col_idx)].width = width
+        ws.row_dimensions[1].height = 25
+    return buffer.getvalue()
 
+def get_gemini_client():
+    api_key = st.secrets.get("GEMINI_API_KEY", None) if hasattr(st, "secrets") else None
+    api_key = api_key or os.getenv("GEMINI_API_KEY")
+    if not api_key:
+        return None
+    try:
+        from google import genai
+        return genai.Client(api_key=api_key)
+    except Exception:
+        return None
 
-if "dataframe" not in st.session_state:
-    st.session_state.dataframe = pd.DataFrame(columns=["ID", "Name", "Date", "Amount", "Notes"])
-if "file_name" not in st.session_state:
-    st.session_state.file_name = "AI_Generated_Excel.xlsx"
+def gemini_text(prompt: str, df: pd.DataFrame | None = None) -> str:
+    client = get_gemini_client()
+    if client is None:
+        return "Gemini সংযুক্ত নেই। Streamlit app-এর Secrets-এ GEMINI_API_KEY যোগ করুন।"
+    context = ""
+    if df is not None:
+        context = "\n\nData sample (first 30 rows):\n" + df.head(30).to_csv(index=False)
+    response = client.models.generate_content(
+        model="gemini-2.5-flash",
+        contents=prompt + context
+    )
+    return response.text or "AI কোনো লেখা ফেরত দেয়নি।"
 
+# -------------------- Session state --------------------
+if "df" not in st.session_state:
+    st.session_state.df = pd.DataFrame()
+if "ai_result" not in st.session_state:
+    st.session_state.ai_result = ""
+
+# -------------------- Sidebar navigation --------------------
 with st.sidebar:
     st.markdown("## 📊 AnalyzeData.io")
     st.caption("AI Excel Generator")
-    page = st.radio("NAVIGATION", ["Dashboard", "AI Excel Generator", "Templates", "About"])
-    st.divider()
-    st.caption("CURRENT FEATURES")
-    st.markdown("**Paste data:** Available")
-    st.markdown("**Salary calculations:** Available")
-    st.markdown("**CSV / XLSX import:** Available")
-    st.markdown("**Gemini AI / PDF / Image:** Not connected yet")
+    st.markdown("---")
+    page = st.radio(
+        "NAVIGATION",
+        ["🏠 Dashboard", "✨ AI Excel Generator", "📁 Templates", "ℹ️ About"],
+        label_visibility="visible"
+    )
+    st.markdown("---")
+    st.markdown("### CURRENT FEATURES")
+    st.markdown("🟢 **CSV / XLSX Import**")
+    st.markdown("🟢 **Paste & edit data**")
+    st.markdown("🟢 **Excel export**")
+    st.markdown("🟢 **Salary calculations**")
+    st.markdown("🟡 **Gemini AI** — API key required")
+    st.markdown("---")
+    st.caption("AnalyzeData.io · Built with Streamlit")
 
-if page == "Dashboard":
-    st.markdown('<div class="hero"><h1>Turn your data into professional Excel files.</h1><p>Paste data, upload a file, edit the preview, and download a formatted workbook.</p></div>', unsafe_allow_html=True)
-    a,b,c = st.columns(3)
-    for col, label, value in [(a,"Workbook builder","Ready"),(b,"Editable preview","Included"),(c,"Salary calculations","Included")]:
-        with col: st.markdown(f'<div class="metric-card"><div class="metric-label">{label}</div><div class="metric-value">{value}</div></div>', unsafe_allow_html=True)
-    st.subheader("Start creating")
-    st.write("বাম পাশের Navigation থেকে **AI Excel Generator** খুলুন।")
+# -------------------- Dashboard --------------------
+if page == "🏠 Dashboard":
+    st.markdown("""
+    <div class="hero">
+      <h1>AnalyzeData.io</h1>
+      <p>Turn messy data into clean, useful Excel workbooks.</p>
+      <p>Paste data · Upload files · Edit preview · Analyze with AI · Download Excel</p>
+    </div>
+    """, unsafe_allow_html=True)
+    a, b, c = st.columns(3)
+    with a:
+        st.markdown('<div class="metric-card"><div class="metric-label">Workbook builder</div><div class="metric-value">Ready</div></div>', unsafe_allow_html=True)
+    with b:
+        st.markdown('<div class="metric-card"><div class="metric-label">Editable preview</div><div class="metric-value">Included</div></div>', unsafe_allow_html=True)
+    with c:
+        st.markdown('<div class="metric-card"><div class="metric-label">Excel export</div><div class="metric-value">Included</div></div>', unsafe_allow_html=True)
+    st.subheader("শুরু করুন")
+    st.write("বাম পাশের **AI Excel Generator** থেকে ডেটা পেস্ট করুন অথবা CSV/XLSX ফাইল আপলোড করুন।")
+    if not st.session_state.df.empty:
+        st.success(f"বর্তমান ডেটায় {len(st.session_state.df)}টি row এবং {len(st.session_state.df.columns)}টি column আছে।")
+        st.dataframe(st.session_state.df.head(8), use_container_width=True)
 
-elif page == "AI Excel Generator":
-    st.title("AI Excel Generator")
-    st.caption("Paste your source data or upload a CSV/XLSX file. Edit the result and download Excel.")
-    st.subheader("1. Paste your data")
-    pasted = st.text_area("Paste table data here (header row first)", height=210, placeholder="Employee ID\tEmployee Name\tDepartment\tBasic Salary\tHRA\tOther Allowance\tDeduction\nEMP101\tRahul Das\tSales\t18000\t3000\t2000\t1000")
-    if st.button("Convert pasted data to Excel table", type="primary", use_container_width=True):
-        try:
-            st.session_state.dataframe = parse_pasted_data(pasted)
-            st.session_state.file_name = "Pasted_Data_Excel.xlsx"
-            st.success("তোমার paste করা data টেবিলে চলে এসেছে। নিচে preview দেখো।")
-        except Exception as exc:
-            st.error(str(exc))
-    st.divider()
-    st.subheader("2. Or create an empty structure / upload a file")
-    prompt = st.text_area("Describe the columns you want", placeholder="Create a sheet with columns: Name, Department, Phone, Joining Date", height=90)
-    left,right = st.columns(2)
-    with left:
-        template = st.selectbox("Start with a template", ["Custom / Universal", "Employee Details", "Salary Calculator", "Attendance Sheet", "Student Marks"])
-        if st.button("Generate empty structure", use_container_width=True):
-            st.session_state.dataframe = make_starter_dataframe(prompt, template)
-            st.session_state.file_name = "AI_Generated_Excel.xlsx"
-            st.success("ফাঁকা structure তৈরি হয়েছে।")
-    with right:
-        upload = st.file_uploader("Upload source data (CSV / XLSX)", type=["csv", "xlsx", "xls"])
-        if upload is not None and st.button("Load uploaded file", use_container_width=True):
+# -------------------- Main generator --------------------
+elif page == "✨ AI Excel Generator":
+    st.title("✨ AI Excel Generator")
+    st.caption("ডেটা পেস্ট করুন বা ফাইল আপলোড করুন। Preview সম্পাদনা করে Excel ডাউনলোড করুন।")
+    tab_paste, tab_upload = st.tabs(["📝 Paste data", "📤 Upload file"])
+    with tab_paste:
+        raw = st.text_area(
+            "টেবিল ডেটা পেস্ট করুন (প্রথম লাইনে column heading রাখুন)",
+            height=180,
+            placeholder="Employee ID,Employee Name,Department,Basic Salary,HRA,Other Allowance,Deduction\nEMP101,Rahul Das,Sales,18000,3000,2000,500"
+        )
+        if st.button("Convert pasted data", use_container_width=True):
+            parsed = parse_pasted_data(raw)
+            if parsed.empty:
+                st.warning("আগে কিছু ডেটা পেস্ট করুন।")
+            else:
+                st.session_state.df = parsed
+                st.success(f"{len(parsed)}টি row এবং {len(parsed.columns)}টি column পাওয়া গেছে।")
+    with tab_upload:
+        uploaded = st.file_uploader("CSV, XLSX বা XLS ফাইল বেছে নিন", type=["csv", "xlsx", "xls", "tsv"])
+        if uploaded is not None and st.button("Import uploaded file", use_container_width=True):
             try:
-                st.session_state.dataframe = parse_uploaded_file(upload)
-                st.session_state.file_name = re.sub(r"\.[^.]+$", "", upload.name) + "_formatted.xlsx"
-                st.success("ফাইল load হয়েছে।")
-            except Exception as exc: st.error(str(exc))
-    st.divider()
-    st.subheader("3. Excel Preview & Editor")
-    st.caption("টেবিলের cell-এ click করে data পরিবর্তন করতে বা নতুন row যোগ করতে পারো।")
-    edited = st.data_editor(st.session_state.dataframe, num_rows="dynamic", use_container_width=True, hide_index=True, key="excel_editor_v2")
-    edited = clean_and_calculate(edited)
-    st.session_state.dataframe = edited
-    if "Net Salary" in edited.columns and len(edited):
-        st.metric("Total Net Salary", f"₹{pd.to_numeric(edited['Net Salary'], errors='coerce').fillna(0).sum():,.2f}")
-        if "Department" in edited.columns:
-            st.subheader("Department-wise Net Salary")
-            st.dataframe(edited.groupby("Department", dropna=False)["Net Salary"].sum().reset_index(name="Total Net Salary"), use_container_width=True, hide_index=True)
-    st.download_button("⬇️ Download Professional Excel", data=style_workbook(edited), file_name=st.session_state.file_name, mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", type="primary", use_container_width=True)
-    st.info("নোট: এই সংস্করণে pasted CSV/tab/pipe data, salary হিসাব, department summary এবং Excel export কাজ করে। Gemini-ভিত্তিক প্রকৃত AI, PDF পড়া ও image OCR এখনো যুক্ত করা হয়নি।")
+                st.session_state.df = read_upload(uploaded)
+                st.success(f"{len(st.session_state.df)}টি row import হয়েছে।")
+            except Exception as e:
+                st.error(f"ফাইল পড়া যায়নি: {e}")
 
-elif page == "Templates":
-    st.title("Ready-made Excel Templates")
-    st.write("Generator পেজে template বেছে empty structure তৈরি করতে পারো।")
-    for name, cols in {"Employee Details":"Employee ID, Employee Name, Department, Designation, Phone, Joining Date","Salary Calculator":", ".join(SALARY_COLUMNS),"Attendance Sheet":"Employee ID, Employee Name, Working Days, Present Days, Absent, Attendance %","Student Marks":"Student ID, Student Name, Subject, Total Marks, Obtained Marks, Percentage"}.items():
-        with st.expander(name): st.write(cols)
+    st.divider()
+    st.subheader("নতুন টেবিল তৈরি করুন")
+    description = st.text_input("কোন কোন column চান?", placeholder="Name, Department, Phone, Joining Date")
+    if st.button("Create empty structure"):
+        cols = [x.strip() for x in re.split(r"[,;|]", description) if x.strip()]
+        if cols:
+            st.session_state.df = pd.DataFrame(columns=cols)
+            st.success("নতুন empty structure তৈরি হয়েছে।")
+        else:
+            st.warning("কমা দিয়ে column-এর নাম লিখুন।")
+
+    if not st.session_state.df.empty:
+        st.divider()
+        st.subheader("📊 Excel Preview & Editor")
+        st.caption("নিচের cell-এ ক্লিক করে ডেটা পরিবর্তন করতে পারবেন।")
+        edited = st.data_editor(
+            st.session_state.df,
+            num_rows="dynamic",
+            use_container_width=True,
+            hide_index=True,
+            key="main_data_editor"
+        )
+        st.session_state.df = edited
+        left, right = st.columns(2)
+        with left:
+            if st.button("🧮 Calculate salary", use_container_width=True):
+                st.session_state.df = salary_calculations(st.session_state.df)
+                st.success("Salary calculation সম্পন্ন হয়েছে।")
+                st.rerun()
+        with right:
+            if st.button("🗑️ Clear current data", use_container_width=True):
+                st.session_state.df = pd.DataFrame()
+                st.rerun()
+        excel_bytes = make_excel(st.session_state.df)
+        st.download_button(
+            "⬇️ Download Professional Excel",
+            data=excel_bytes,
+            file_name=f"AnalyzeData_{date.today().isoformat()}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True
+        )
+
+        st.divider()
+        st.subheader("🤖 Gemini AI Data Assistant")
+        st.caption("Gemini API key যুক্ত থাকলে AI আপনার ডেটা বিশ্লেষণ করতে পারবে।")
+        question = st.text_area("আপনার প্রশ্ন", placeholder="এই ডেটার summary দিন, ভুল বা missing value খুঁজুন...")
+        if st.button("Ask Gemini AI", use_container_width=True):
+            if question.strip():
+                with st.spinner("AI বিশ্লেষণ করছে..."):
+                    try:
+                        st.session_state.ai_result = gemini_text(question, st.session_state.df)
+                    except Exception as e:
+                        st.session_state.ai_result = f"Gemini error: {e}"
+            else:
+                st.warning("আগে একটি প্রশ্ন লিখুন।")
+        if st.session_state.ai_result:
+            st.markdown(st.session_state.ai_result)
+
+# -------------------- Templates --------------------
+elif page == "📁 Templates":
+    st.title("📁 Ready-made templates")
+    st.write("একটি template বেছে নিয়ে নিজের ডেটা দিয়ে পূরণ করুন।")
+    templates = {
+        "Employee Salary": ["Employee ID", "Employee Name", "Department", "Basic Salary", "HRA", "Other Allowance", "Deduction"],
+        "Student Marks": ["Roll", "Student Name", "Subject", "Total Marks", "Marks Obtained", "Grade"],
+        "Sales Report": ["Date", "Product", "Category", "Quantity", "Unit Price", "Total Sales"],
+        "Attendance": ["Date", "Employee Name", "Department", "Status", "In Time", "Out Time"],
+        "Expense Tracker": ["Date", "Description", "Category", "Payment Method", "Amount"],
+    }
+    choice = st.selectbox("Template নির্বাচন করুন", list(templates))
+    st.dataframe(pd.DataFrame(columns=templates[choice]), use_container_width=True)
+    if st.button("Use this template"):
+        st.session_state.df = pd.DataFrame(columns=templates[choice])
+        st.success("Template তৈরি হয়েছে। AI Excel Generator পেজে যান।")
+
+# -------------------- About --------------------
 else:
-    st.title("About AnalyzeData.io")
-    st.write("AnalyzeData.io text table বা CSV/XLSX data থেকে editable ও formatted Excel workbook তৈরি করে।")
-    st.warning("Gemini AI, PDF parsing এবং image OCR এখনো সংযুক্ত নয়।")
+    st.title("ℹ️ About AnalyzeData.io")
+    st.write("AnalyzeData.io একটি data-to-Excel workbook builder।")
+    st.markdown("""
+    **যা করতে পারবেন**
+    - CSV, XLSX এবং TSV import
+    - CSV/TSV/pipe-separated data paste
+    - Table preview ও cell editing
+    - Basic salary, HRA, allowance, gross, deduction ও net salary হিসাব
+    - Formatted Excel workbook download
+    - Gemini API key থাকলে AI data analysis
+    """)
+    st.info("AI ব্যবহার করতে Streamlit Cloud → App settings → Secrets-এ GEMINI_API_KEY যোগ করুন। API key কখনো app.py-তে লিখবেন না।")
