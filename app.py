@@ -6,7 +6,7 @@ from datetime import date
 
 import pandas as pd
 import streamlit as st
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Font, PatternFill, Border, Side, Alignment
 from openpyxl.utils import get_column_letter
 
@@ -256,15 +256,17 @@ def make_excel(df):
             column=column_number,
             value=heading,
         )
+        # Use dark text on a light fill so headings remain readable even
+        # in mobile spreadsheet viewers that fail to render cell background fills.
         cell.fill = PatternFill(
             fill_type="solid",
-            fgColor="173F73",
+            fgColor="DCEBFA",
         )
         cell.font = Font(
             name="Arial",
             bold=True,
-            color="FFFFFF",
-            size=11,
+            color="173F73",
+            size=12,
         )
         cell.alignment = Alignment(
             horizontal="center",
@@ -326,8 +328,21 @@ def make_excel(df):
     output = io.BytesIO()
     workbook.save(output)
     output.seek(0)
+    excel_bytes = output.getvalue()
 
-    return output.getvalue()
+    # Verify the saved workbook really contains headings in row 1.
+    check_workbook = load_workbook(io.BytesIO(excel_bytes), read_only=True, data_only=False)
+    check_sheet = check_workbook["Data"]
+    saved_headers = [
+        check_sheet.cell(row=1, column=column_number).value
+        for column_number in range(1, len(headers) + 1)
+    ]
+    check_workbook.close()
+
+    if saved_headers != headers:
+        raise ValueError("Excel export validation failed: headings are missing from row 1.")
+
+    return excel_bytes
 
 
 # ---------------------------------------------------------
@@ -736,8 +751,7 @@ elif page == "📁 Templates":
         )
         st.session_state.ai_result = ""
         st.success(
-       
-                   "Template তৈরি হয়েছে। AI Excel Generator পেজে যান।"
+            "Template তৈরি হয়েছে। AI Excel Generator পেজে যান।"
         )
 
 
