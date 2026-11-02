@@ -271,7 +271,8 @@ def make_excel(df):
         cell.alignment = Alignment(
             horizontal="center",
             vertical="center",
-            wrap_text=True,
+            wrap_text=False,
+            shrink_to_fit=True,
         )
         cell.border = Border(
             bottom=Side(style="medium", color="2563EB")
@@ -292,7 +293,7 @@ def make_excel(df):
                 value=value,
             )
 
-    worksheet.row_dimensions[1].height = 32
+    worksheet.row_dimensions[1].height = 30
     worksheet.freeze_panes = "A2"
     worksheet.auto_filter.ref = worksheet.dimensions
 
@@ -310,9 +311,13 @@ def make_excel(df):
             for cell in column_cells
         )
 
+        heading_length = len(headers[column_number - 1])
+        # Wider heading-based widths prevent labels such as "Employee Name"
+        # and "Other Allowance" from wrapping on mobile spreadsheet viewers.
+        minimum_width = max(18, int(heading_length * 1.65) + 5)
         worksheet.column_dimensions[
             get_column_letter(column_number)
-        ].width = min(max(longest + 3, 15), 34)
+        ].width = min(max(longest + 3, minimum_width), 42)
 
     # Make data readable.
     for row in worksheet.iter_rows(min_row=2):
