@@ -52,25 +52,48 @@ def salary_calculations(df):
     return out
 
 def make_excel(df):
-    df=clean_df(df)
-    df=df.loc[:,[c for c in df.columns if str(c).strip() and not str(c).lower().startswith('unnamed:')]]
-    if df.empty or len(df.columns)==0: raise ValueError('Excel export করার মতো data নেই।')
-    bio=io.BytesIO()
-    with pd.ExcelWriter(bio,engine='openpyxl') as writer:
-        df.to_excel(writer,index=False,header=True,startrow=0,sheet_name='Data')
-        ws=writer.sheets['Data']
-        # Explicitly write headings into Excel row 1.
-        for j,name in enumerate(df.columns,1): ws.cell(row=1,column=j,value=str(name))
-        ws.freeze_panes='A2'; ws.auto_filter.ref=ws.dimensions
-        fill=PatternFill('solid',fgColor='173F73'); font=Font(bold=True,color='FFFFFF')
-        edge=Side(style='thin',color='D8E3F0')
-        for cell in ws[1]:
-            cell.fill=fill; cell.font=font; cell.alignment=Alignment(horizontal='center',vertical='center',wrap_text=True); cell.border=Border(bottom=edge)
-        for j,cells in enumerate(ws.columns,1):
-            width=min(max(max((len(str(c.value)) if c.value is not None else 0) for c in cells)+3,12),34)
-            ws.column_dimensions[get_column_letter(j)].width=width
-        ws.row_dimensions[1].height=28
-    bio.seek(0); return bio.getvalue()
+    """Build the workbook directly so column headings are always written in row 1."""
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Border, Side, Alignment
+    from openpyxl.utils import get_column_letter
+
+    df = clean_df(df)
+    df = df.loc[:, [c for c in df.columns
+                    if str(c).strip() and not str(c).lower().startswith('unnamed:')]]
+    if df.empty or len(df.columns) == 0:
+        raise ValueError('Excel export করার মতো data নেই।')
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = 'Data'
+
+    # Write headings explicitly as the first row, then write records below them.
+    headers = [str(name).strip() for name in df.columns]
+    ws.append(headers)
+    for record in df.itertuples(index=False, name=None):
+        ws.append([None if pd.isna(value) else value for value in record])
+
+    header_fill = PatternFill(fill_type='solid', fgColor='173F73')
+    header_font = Font(bold=True, color='FFFFFF', size=11)
+    thin_blue = Side(style='thin', color='D8E3F0')
+    for cell in ws[1]:
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+        cell.border = Border(bottom=thin_blue)
+
+    ws.freeze_panes = 'A2'
+    ws.auto_filter.ref = ws.dimensions
+    ws.row_dimensions[1].height = 32
+    for col_idx, column_cells in enumerate(ws.columns, start=1):
+        longest = max((len(str(cell.value)) if cell.value is not None else 0)
+                      for cell in column_cells)
+        ws.column_dimensions[get_column_letter(col_idx)].width = min(max(longest + 3, 14), 34)
+
+    bio = io.BytesIO()
+    wb.save(bio)
+    bio.seek(0)
+    return bio.getvalue()
 
 def gemini_answer(prompt,df):
     key=st.secrets.get('GEMINI_API_KEY',None) if hasattr(st,'secrets') else None
