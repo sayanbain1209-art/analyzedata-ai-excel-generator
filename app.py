@@ -222,132 +222,87 @@ def salary_calculations(df):
 # ---------------------------------------------------------
 # EXCEL EXPORT
 # ---------------------------------------------------------
+
 def make_excel(df):
-    """
-    Create a clean Excel workbook.
-    Headings are written explicitly into row 1.
-    Employee records begin from row 2.
-    """
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Border, Side, Alignment
+    from openpyxl.utils import get_column_letter
+
     df = clean_df(df)
 
-    # Remove accidental empty/unnamed columns.
-    valid_columns = [
-        column
-        for column in df.columns
-        if str(column).strip()
-        and not str(column).strip().lower().startswith("unnamed:")
-    ]
-    df = df.loc[:, valid_columns]
+    df = df.loc[:, [
+        c for c in df.columns
+        if str(c).strip()
+        and not str(c).strip().lower().startswith("unnamed:")
+    ]]
 
     if df.empty or len(df.columns) == 0:
         raise ValueError("Excel export করার মতো data নেই।")
 
-    workbook = Workbook()
-    worksheet = workbook.active
-    worksheet.title = "Data"
-    worksheet.sheet_view.showGridLines = True
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Data"
 
-    headers = [str(column).strip() for column in df.columns]
+    # Write column headings in row 1
+    headers = [str(c).strip() for c in df.columns]
+    ws.append(headers)
 
-    # Explicit cell assignment prevents an accidental blank first row.
-    for column_number, heading in enumerate(headers, start=1):
-        cell = worksheet.cell(
-            row=1,
-            column=column_number,
-            value=heading,
-        )
-        # Use dark text on a light fill so headings remain readable even
-        # in mobile spreadsheet viewers that fail to render cell background fills.
-        cell.fill = PatternFill(
-            fill_type="solid",
-            fgColor="DCEBFA",
-        )
-        cell.font = Font(
-            name="Arial",
-            bold=True,
-            color="173F73",
-            size=12,
-        )
+    # Write employee data from row 2
+    for record in df.itertuples(index=False, name=None):
+        ws.append([
+            None if pd.isna(value) else value
+            for value in record
+        ])
+
+    # Header formatting
+    header_fill = PatternFill(
+        fill_type="solid",
+        fgColor="173F73"
+    )
+
+    header_font = Font(
+        bold=True,
+        color="FFFFFF",
+        size=11
+    )
+
+    thin_side = Side(
+        style="thin",
+        color="D8E3F0"
+    )
+
+    for cell in ws[1]:
+        cell.fill = header_fill
+        cell.font = header_font
         cell.alignment = Alignment(
             horizontal="center",
             vertical="center",
-            wrap_text=False,
-            shrink_to_fit=True,
+            wrap_text=True
         )
-        cell.border = Border(
-            bottom=Side(style="medium", color="2563EB")
-        )
+        cell.border = Border(bottom=thin_side)
 
-    # Write data from row 2 onward.
-    for row_number, record in enumerate(
-        df.itertuples(index=False, name=None),
-        start=2,
-    ):
-        for column_number, value in enumerate(record, start=1):
-            if pd.isna(value):
-                value = None
+    # Row and column settings
+    ws.row_dimensions[1].height = 35
+    ws.freeze_panes = "A2"
+    ws.auto_filter.ref = ws.dimensions
 
-            worksheet.cell(
-                row=row_number,
-                column=column_number,
-                value=value,
-            )
-
-    worksheet.row_dimensions[1].height = 30
-    worksheet.freeze_panes = "A2"
-    worksheet.auto_filter.ref = worksheet.dimensions
-
-    # Fit column widths to their contents.
-    for column_number, column_cells in enumerate(
-        worksheet.iter_cols(),
-        start=1,
-    ):
+    for col_num, cells in enumerate(ws.columns, 1):
         longest = max(
-            (
-                len(str(cell.value))
-                if cell.value is not None
-                else 0
-            )
-            for cell in column_cells
+            len(str(cell.value))
+            if cell.value is not None else 0
+            for cell in cells
         )
 
-        heading_length = len(headers[column_number - 1])
-        # Wider heading-based widths prevent labels such as "Employee Name"
-        # and "Other Allowance" from wrapping on mobile spreadsheet viewers.
-        minimum_width = max(18, int(heading_length * 1.65) + 5)
-        worksheet.column_dimensions[
-            get_column_letter(column_number)
-        ].width = min(max(longest + 3, minimum_width), 42)
+        ws.column_dimensions[
+            get_column_letter(col_num)
+        ].width = min(max(longest + 4, 15), 32)
 
-    # Make data readable.
-    for row in worksheet.iter_rows(min_row=2):
-        for cell in row:
-            cell.alignment = Alignment(
-                vertical="center",
-                wrap_text=True,
-            )
-            cell.border = Border(
-                bottom=Side(style="thin", color="D8E3F0")
-            )
-
+    # Save Excel file
     output = io.BytesIO()
-    workbook.save(output)
+    wb.save(output)
     output.seek(0)
-    excel_bytes = output.getvalue()
 
-    # Verify the saved workbook really contains headings in row 1.
-    check_workbook = load_workbook(io.BytesIO(excel_bytes), read_only=True, data_only=False)
-    check_sheet = check_workbook["Data"]
-    saved_headers = [
-        check_sheet.cell(row=1, column=column_number).value
-        for column_number in range(1, len(headers) + 1)
-    ]
-    check_workbook.close()
-
-    if saved_headers != headers:
-        raise ValueError("Excel export validation failed: headings are missing from row 1.")
-
-    return excel_bytes
+    return output.getvalue()
 
 
 # ---------------------------------------------------------
