@@ -9,6 +9,7 @@ import streamlit as st
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Font, PatternFill, Border, Side, Alignment
 from openpyxl.utils import get_column_letter
+from openpyxl.worksheet.table import Table, TableStyleInfo
 
 
 # ---------------------------------------------------------
@@ -222,87 +223,98 @@ def salary_calculations(df):
 # ---------------------------------------------------------
 # EXCEL EXPORT
 # ---------------------------------------------------------
-
 def make_excel(df):
-    from openpyxl import Workbook
-    from openpyxl.styles import Font, PatternFill, Border, Side, Alignment
-    from openpyxl.utils import get_column_letter
-
+    """Create an Excel file with a real Excel Table and visible row-1 headers."""
     df = clean_df(df)
-
-    df = df.loc[:, [
-        c for c in df.columns
-        if str(c).strip()
-        and not str(c).strip().lower().startswith("unnamed:")
-    ]]
 
     if df.empty or len(df.columns) == 0:
         raise ValueError("Excel export করার মতো data নেই।")
 
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "Data"
+    # Keep all real columns; clean_df has already repaired blank/unnamed names.
+    headers = [str(column).strip() for column in df.columns]
+    if any(not heading for heading in headers):
+        raise ValueError("এক বা একাধিক column heading ফাঁকা আছে।")
 
-    # Write column headings in row 1
-    headers = [str(c).strip() for c in df.columns]
-    ws.append(headers)
+    workbook = Workbook()
+    worksheet = workbook.active
+    worksheet.title = "Data"
+    worksheet.sheet_state = "visible"
+    worksheet.sheet_view.showGridLines = True
+    worksheet.sheet_view.showRowColHeaders = True
+    worksheet.sheet_view.zoomScale = 90
 
-    # Write employee data from row 2
-    for record in df.itertuples(index=False, name=None):
-        ws.append([
-            None if pd.isna(value) else value
-            for value in record
-        ])
-
-    # Header formatting
-    header_fill = PatternFill(
-        fill_type="solid",
-        fgColor="173F73"
-    )
-
-    header_font = Font(
-        bold=True,
-        color="FFFFFF",
-        size=11
-    )
-
-    thin_side = Side(
-        style="thin",
-        color="D8E3F0"
-    )
-
-    for cell in ws[1]:
-        cell.fill = header_fill
-        cell.font = header_font
+    # Write the header row explicitly, then write records starting at row 2.
+    for col_num, heading in enumerate(headers, start=1):
+        cell = worksheet.cell(row=1, column=col_num, value=heading)
+        cell.font = Font(name="Arial", bold=True, color="FFFFFF", size=11)
+        cell.fill = PatternFill(fill_type="solid", fgColor="1F4E78")
         cell.alignment = Alignment(
-            horizontal="center",
-            vertical="center",
-            wrap_text=True
+            horizontal="center", vertical="center", wrap_text=False
         )
-        cell.border = Border(bottom=thin_side)
-
-    # Row and column settings
-    ws.row_dimensions[1].height = 35
-    ws.freeze_panes = "A2"
-    ws.auto_filter.ref = ws.dimensions
-
-    for col_num, cells in enumerate(ws.columns, 1):
-        longest = max(
-            len(str(cell.value))
-            if cell.value is not None else 0
-            for cell in cells
+        cell.border = Border(
+            top=Side(style="thin", color="1F1F1F"),
+            bottom=Side(style="medium", color="1F1F1F"),
+            left=Side(style="thin", color="D9E2F3"),
+            right=Side(style="thin", color="D9E2F3"),
         )
 
-        ws.column_dimensions[
-            get_column_letter(col_num)
-        ].width = min(max(longest + 4, 15), 32)
+    for row_num, record in enumerate(df.itertuples(index=False, name=None), start=2):
+        for col_num, value in enumerate(record, start=1):
+            if pd.isna(value):
+                value = None
+            worksheet.cell(row=row_num, column=col_num, value=value)
 
-    # Save Excel file
+    worksheet.row_dimensions[1].height = 28
+    # Do not freeze panes: some mobile spreadsheet viewers render frozen
+    # first rows incorrectly. The Excel Table below supplies filter controls.
+    worksheet.freeze_panes = None
+
+    # Set readable widths, with enough room for the full heading text.
+    for col_num, heading in enumerate(headers, start=1):
+        letter = get_column_letter(col_num)
+        longest_data = max(
+            (len(str(df.iloc[row, col_num - 1])) for row in range(len(df))),
+            default=0,
+        )
+        width = max(len(heading) + 4, min(longest_data + 3, 30), 16)
+        worksheet.column_dimensions[letter].width = min(width, 34)
+
+    for row in worksheet.iter_rows(min_row=2, max_row=worksheet.max_row):
+        for cell in row:
+            cell.alignment = Alignment(vertical="center", wrap_text=False)
+            cell.border = Border(
+                bottom=Side(style="thin", color="D8E3F0")
+            )
+
+    # A genuine Excel Table marks row 1 as the header row in Excel/mobile apps.
+    table = Table(displayName="AnalyzeDataTable", ref=worksheet.dimensions)
+    table.tableStyleInfo = TableStyleInfo(
+        name="TableStyleMedium2",
+        showFirstColumn=False,
+        showLastColumn=False,
+        showRowStripes=True,
+        showColumnStripes=False,
+    )
+    worksheet.add_table(table)
+
     output = io.BytesIO()
-    wb.save(output)
-    output.seek(0)
+    workbook.save(output)
+    excel_bytes = output.getvalue()
 
-    return output.getvalue()
+    # Re-open the actual saved bytes and verify every header is in row 1.
+    check_workbook = load_workbook(io.BytesIO(excel_bytes), read_only=False, data_only=False)
+    check_sheet = check_workbook["Data"]
+    saved_headers = [
+        check_sheet.cell(row=1, column=col_num).value
+        for col_num in range(1, len(headers) + 1)
+    ]
+    has_table = "AnalyzeDataTable" in check_sheet.tables
+    check_workbook.close()
+
+    if saved_headers != headers or not has_table:
+        raise ValueError("Excel export validation failed: header row/table is missing.")
+
+    return excel_bytes
 
 
 # ---------------------------------------------------------
