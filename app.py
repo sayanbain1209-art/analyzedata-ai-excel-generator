@@ -306,6 +306,14 @@ def make_excel(sheets):
                 cell.alignment = Alignment(vertical="center", wrap_text=False)
                 cell.border = Border(bottom=Side(style="thin", color="D8E3F0"))
 
+        # Final guard: every exported column gets a non-empty heading in row 1.
+        for col_num in range(1, ws.max_column + 1):
+            heading_cell = ws.cell(row=1, column=col_num)
+            if heading_cell.value is None or not str(heading_cell.value).strip():
+                heading_cell.value = f"Column_{col_num}"
+                heading_cell.font = Font(name="Arial", bold=True, color="FFFFFF", size=11)
+                heading_cell.fill = PatternFill(fill_type="solid", fgColor="1F4E78")
+                heading_cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
         if ws.max_row >= 2 and ws.max_column >= 1:
             table = Table(displayName=f"Table{len(used_sheet_names)}", ref=ws.dimensions)
             table.tableStyleInfo = TableStyleInfo(
@@ -627,8 +635,33 @@ elif page == "🌐 Universal Data Workspace":
             st.info("এই worksheet-এ এখনো data নেই। উপরে data paste/upload করুন অথবা template নিন।")
         else:
             st.caption(
-                "Cell ও column heading সম্পাদনা করতে পারবেন। পরিবর্তন export-এ ব্যবহার হবে।"
+                "Excel Export-এ প্রথম সারিতে Column Heading এবং দ্বিতীয় সারি থেকে Data থাকবে।"
             )
+
+            # Explicit heading editor for reliable column-name editing.
+            with st.expander("✏️ Column Heading দেখুন / পরিবর্তন করুন", expanded=True):
+                heading_values = []
+                heading_cols = st.columns(min(len(current.columns), 3))
+                for heading_index, old_heading in enumerate(current.columns):
+                    with heading_cols[heading_index % len(heading_cols)]:
+                        heading_values.append(
+                            st.text_input(
+                                f"Column {heading_index + 1}",
+                                value=str(old_heading),
+                                key=f"heading_{current_name}_{heading_index}",
+                            )
+                        )
+                if st.button("Heading Apply করুন", key=f"apply_headings_{current_name}"):
+                    cleaned_headings = [str(value).strip() for value in heading_values]
+                    if any(not value for value in cleaned_headings):
+                        st.error("কোনো Heading ফাঁকা রাখা যাবে না।")
+                    else:
+                        renamed = current.copy()
+                        renamed.columns = unique_headers(cleaned_headings)
+                        st.session_state.sheets[current_name] = renamed
+                        st.success("Column Heading আপডেট হয়েছে।")
+                        st.rerun()
+
             edited = st.data_editor(
                 current,
                 num_rows="dynamic",
@@ -762,4 +795,44 @@ elif page == "📁 Official Templates":
         sheet_name = chosen
         st.session_state.sheets[sheet_name] = pd.DataFrame(columns=columns)
         st.session_state.active_sheet = sheet_name
-   
+        st.session_state.ai_result = ""
+        st.success(
+            f"'{chosen}' template তৈরি হয়েছে। Universal Data Workspace-এ গিয়ে data যোগ করুন।"
+        )
+
+
+# ------------------------------
+# ABOUT
+# ------------------------------
+else:
+    st.title("ℹ️ About AnalyzeData.io")
+    st.write(
+        "AnalyzeData.io হলো একটি configurable Universal Official Work ও Excel "
+        "workspace। এটি বিভিন্ন ধরনের tabular office/business data import, inspect, "
+        "edit, analyze, template তৈরি এবং Excel export করতে সাহায্য করে।"
+    )
+    st.markdown(
+        """
+        **বর্তমান সুবিধা**
+        - CSV, XLSX, XLSM, XLS ও TSV import
+        - Excel workbook-এর একাধিক worksheet import
+        - প্রথম দিকের rows থেকে সম্ভাব্য heading শনাক্ত করার চেষ্টা
+        - Data paste, edit ও নতুন table structure তৈরি
+        - Missing value, duplicate row ও column profile
+        - Numeric summary ও salary calculation
+        - HR, Finance, Business, Education, Healthcare, Project, Logistics ইত্যাদির templates
+        - Formatting ও heading-সহ multi-sheet Excel download
+        - Gemini API key থাকলে AI data assistant
+
+        **গুরুত্বপূর্ণ সীমাবদ্ধতা**
+        - Heading detection স্বয়ংক্রিয় অনুমান; import-এর পরে Preview পরীক্ষা করা উচিত।
+        - সব দেশের সব সরকারি/বেসরকারি workflow এক কোডে আগে থেকেই সম্পূর্ণ তৈরি থাকে না।
+          Template ও configurable data workspace দিয়ে ধাপে ধাপে নতুন workflow যোগ করা যাবে।
+        - Tax, payroll, medical, legal বা regulatory হিসাব ব্যবহারের আগে সংশ্লিষ্ট দেশের
+          নিয়ম অনুযায়ী যাচাই করতে হবে।
+        """
+    )
+    st.info(
+        "Gemini AI চালু করতে Streamlit Cloud → App settings → Secrets-এ "
+        "GEMINI_API_KEY যোগ করুন। API key কখনো app.py-তে লিখবেন না।"
+    )
