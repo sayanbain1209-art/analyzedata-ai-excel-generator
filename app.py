@@ -3,6 +3,7 @@ import os
 import re
 import csv
 from datetime import date
+from collections import OrderedDict
 
 import pandas as pd
 import streamlit as st
@@ -12,11 +13,11 @@ from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.table import Table, TableStyleInfo
 
 
-# ---------------------------------------------------------
-# PAGE CONFIGURATION
-# ---------------------------------------------------------
+# =========================================================
+# AnalyzeData.io — Universal Official Work & Excel System
+# =========================================================
 st.set_page_config(
-    page_title="AnalyzeData.io | AI Excel Generator",
+    page_title="AnalyzeData.io | Universal Office & Excel",
     page_icon="📊",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -26,85 +27,39 @@ st.markdown(
     """
     <style>
     :root { color-scheme: light; }
-
-    .stApp {
-        background: #f4f7fc;
-        color: #172b45;
-    }
-
-    [data-testid="stSidebar"] {
-        background: #102b4c;
-    }
-
-    [data-testid="stSidebar"] * {
-        color: #f4f8ff !important;
-    }
-
+    .stApp { background: #f4f7fc; color: #172b45; }
+    [data-testid="stSidebar"] { background: #102b4c; }
+    [data-testid="stSidebar"] * { color: #f4f8ff !important; }
     [data-testid="stSidebar"] [data-testid="stRadio"] label {
         background: rgba(255,255,255,.08);
         border: 1px solid rgba(255,255,255,.18);
-        border-radius: 10px;
-        padding: .55rem .7rem;
-        margin: .18rem 0;
+        border-radius: 10px; padding: .55rem .7rem; margin: .18rem 0;
     }
-
     [data-testid="stSidebar"] [data-testid="stRadio"] label:has(input:checked) {
-        background: #2563eb;
-        border-color: #9bc0ff;
+        background: #2563eb; border-color: #9bc0ff;
     }
-
     .hero {
-        padding: 2rem;
-        border-radius: 20px;
-        color: white;
+        padding: 2rem; border-radius: 20px; color: white;
         background: linear-gradient(120deg, #102b4c, #2563eb);
         margin-bottom: 1rem;
     }
-
-    .hero h1, .hero p {
-        color: white !important;
-    }
-
+    .hero h1, .hero p { color: white !important; }
     .metric-card {
-        background: white;
-        border: 1px solid #dce5f1;
-        border-radius: 14px;
-        padding: 1rem;
-        min-height: 95px;
+        background: white; border: 1px solid #dce5f1;
+        border-radius: 14px; padding: 1rem; min-height: 95px;
     }
-
-    .metric-label {
-        color: #526783;
-        font-size: .85rem;
-    }
-
-    .metric-value {
-        color: #102b4c;
-        font-size: 1.5rem;
-        font-weight: 750;
-    }
-
-    h1, h2, h3, p, label {
-        color: #172b45;
-    }
-
+    .metric-label { color: #526783; font-size: .85rem; }
+    .metric-value { color: #102b4c; font-size: 1.5rem; font-weight: 750; }
+    h1, h2, h3, p, label { color: #172b45; }
     .stTextArea textarea, .stTextInput input {
-        color: #172b45 !important;
-        background: white !important;
+        color: #172b45 !important; background: white !important;
     }
-
     .stButton button, .stDownloadButton button {
-        background: #2563eb;
-        color: white;
-        border: 1px solid #2563eb;
-        border-radius: 10px;
-        font-weight: 650;
-        min-height: 2.65rem;
+        background: #2563eb; color: white; border: 1px solid #2563eb;
+        border-radius: 10px; font-weight: 650; min-height: 2.65rem;
     }
-
     .stButton button:hover, .stDownloadButton button:hover {
-        background: #1748b8;
-        color: white;
+        background: #1748b8; color: white;
     }
     </style>
     """,
@@ -112,643 +67,739 @@ st.markdown(
 )
 
 
-# ---------------------------------------------------------
-# DATA CLEANING AND IMPORT
-# ---------------------------------------------------------
-def clean_df(df):
-    """Clean column names and remove completely empty rows/duplicate columns."""
-    df = df.copy()
-
-    cleaned_columns = []
-    for i, column in enumerate(df.columns):
-        name = str(column).strip()
+# ------------------------------
+# DATA HELPERS
+# ------------------------------
+def unique_headers(values):
+    """Keep every source column; give blank/duplicate headings safe names."""
+    result, used = [], {}
+    for index, value in enumerate(values, start=1):
+        name = "" if value is None else str(value).strip()
         if not name or name.lower().startswith("unnamed:"):
-            name = f"Column_{i + 1}"
-        cleaned_columns.append(name)
+            name = f"Column_{index}"
+        count = used.get(name.casefold(), 0) + 1
+        used[name.casefold()] = count
+        if count > 1:
+            name = f"{name}_{count}"
+        result.append(name)
+    return result
 
-    df.columns = cleaned_columns
-    df = df.loc[:, ~pd.Index(df.columns).duplicated()]
+
+def clean_df(df):
+    if df is None:
+        return pd.DataFrame()
+    df = df.copy()
+    df.columns = unique_headers(list(df.columns))
     df = df.dropna(how="all")
-
     return df.reset_index(drop=True)
 
 
-def parse_data(raw):
-    """Read comma, tab, semicolon or pipe-separated pasted data."""
-    raw = (raw or "").strip()
+def detect_header_row(raw_df, max_rows=15):
+    """
+    Estimate a header row from the first rows of a worksheet.
+    This is a best-effort heuristic; users can inspect and edit headings later.
+    """
+    if raw_df is None or raw_df.empty:
+        return 0
+    best_row, best_score = 0, -1
+    for row_index in range(min(len(raw_df), max_rows)):
+        row = raw_df.iloc[row_index].tolist()
+        values = [v for v in row if not pd.isna(v) and str(v).strip() != ""]
+        if not values:
+            continue
+        text_count = sum(isinstance(v, str) for v in values)
+        unique_count = len({str(v).strip().casefold() for v in values})
+        nonempty = len(values)
+        # Headers are commonly text-heavy and contain distinct labels.
+        score = nonempty * 2 + (text_count / nonempty) * 3 + (unique_count / nonempty)
+        # Prefer earlier rows when scores are close.
+        score -= row_index * 0.025
+        if score > best_score:
+            best_row, best_score = row_index, score
+    return best_row
 
+
+def dataframe_from_raw(raw_df):
+    if raw_df is None or raw_df.empty:
+        return pd.DataFrame()
+    raw_df = raw_df.dropna(how="all")
+    if raw_df.empty:
+        return pd.DataFrame()
+    header_row = detect_header_row(raw_df)
+    headers = unique_headers(raw_df.iloc[header_row].tolist())
+    body = raw_df.iloc[header_row + 1:].copy()
+    body.columns = headers
+    return clean_df(body)
+
+
+def parse_pasted_data(raw):
+    raw = (raw or "").strip()
     if not raw:
         return pd.DataFrame()
-
     sample = "\n".join(raw.splitlines()[:8])
-
     try:
-        dialect = csv.Sniffer().sniff(
-            sample,
-            delimiters=",\t;|",
-        )
-        df = pd.read_csv(
-            io.StringIO(raw),
-            sep=dialect.delimiter,
-            engine="python",
-        )
+        dialect = csv.Sniffer().sniff(sample, delimiters=",\t;|")
+        df = pd.read_csv(io.StringIO(raw), sep=dialect.delimiter, engine="python")
         if len(df.columns) > 1:
             return clean_df(df)
     except Exception:
         pass
-
     try:
-        df = pd.read_csv(
-            io.StringIO(raw),
-            sep=None,
-            engine="python",
-        )
+        df = pd.read_csv(io.StringIO(raw), sep=None, engine="python")
         if len(df.columns) > 1:
             return clean_df(df)
     except Exception:
         pass
-
-    raise ValueError(
-        "প্রথম লাইনে column heading দিন এবং প্রতিটি column "
-        "কমা অথবা Tab দিয়ে আলাদা করুন।"
-    )
+    raise ValueError("প্রথম লাইনে column heading দিন এবং column-গুলো কমা বা Tab দিয়ে আলাদা করুন।")
 
 
-# ---------------------------------------------------------
+def read_uploaded_workbook(uploaded_file):
+    """Read every sheet in an Excel workbook, not only the first sheet."""
+    content = uploaded_file.getvalue()
+    filename = uploaded_file.name.lower()
+    result = OrderedDict()
+
+    if filename.endswith((".xlsx", ".xlsm", ".xls")):
+        excel = pd.ExcelFile(io.BytesIO(content))
+        for sheet_name in excel.sheet_names:
+            raw = pd.read_excel(
+                io.BytesIO(content), sheet_name=sheet_name, header=None
+            )
+            result[str(sheet_name)] = dataframe_from_raw(raw)
+    elif filename.endswith(".tsv"):
+        raw = pd.read_csv(io.BytesIO(content), sep="\t", header=None)
+        result["Data"] = dataframe_from_raw(raw)
+    else:
+        raw = pd.read_csv(
+            io.BytesIO(content), sep=None, engine="python", header=None
+        )
+        result["Data"] = dataframe_from_raw(raw)
+
+    return result
+
+
+# ------------------------------
 # SALARY CALCULATIONS
-# ---------------------------------------------------------
+# ------------------------------
 def salary_calculations(df):
     out = clean_df(df)
-    columns = {str(c).strip().lower(): c for c in out.columns}
+    lookup = {str(c).strip().casefold(): c for c in out.columns}
 
     def find(*names):
         for name in names:
-            if name in columns:
-                return columns[name]
+            if name.casefold() in lookup:
+                return lookup[name.casefold()]
         return None
 
-    basic = find("basic salary", "basic", "basic pay")
-
+    basic = find("basic salary", "basic", "basic pay", "basic wages")
     if basic is None:
         return out
 
-    hra = find("hra", "house rent allowance")
+    hra = find("hra", "house rent allowance", "rent allowance")
     allowance = find(
-        "other allowance",
-        "allowance",
-        "other allowances",
+        "other allowance", "allowance", "other allowances",
+        "special allowance", "travel allowance"
     )
-    deduction = find("deduction", "deductions")
+    deduction = find("deduction", "deductions", "total deduction")
 
     def numbers(column):
         if column is None:
-            return pd.Series(0, index=out.index, dtype="float64")
-
+            return pd.Series(0.0, index=out.index)
         return pd.to_numeric(
-            out[column]
-            .astype(str)
+            out[column].astype(str)
             .str.replace(",", "", regex=False)
+            .str.replace("₹", "", regex=False)
             .str.strip(),
             errors="coerce",
         ).fillna(0)
 
-    out["Gross Salary"] = (
-        numbers(basic) + numbers(hra) + numbers(allowance)
-    )
+    out["Gross Salary"] = numbers(basic) + numbers(hra) + numbers(allowance)
     out["Net Salary"] = out["Gross Salary"] - numbers(deduction)
-
     return out
 
 
-# ---------------------------------------------------------
-# EXCEL EXPORT
-# ---------------------------------------------------------
-def make_excel(df):
-    """Create an Excel file with a real Excel Table and visible row-1 headers."""
-    df = clean_df(df)
+# ------------------------------
+# DATA PROFILE / QUALITY
+# ------------------------------
+def data_profile(df):
+    if df.empty:
+        return pd.DataFrame()
+    rows = []
+    for column in df.columns:
+        series = df[column]
+        rows.append({
+            "Column": str(column),
+            "Data Type": str(series.dtype),
+            "Filled Values": int(series.notna().sum()),
+            "Missing Values": int(series.isna().sum()),
+            "Unique Values": int(series.nunique(dropna=True)),
+        })
+    return pd.DataFrame(rows)
 
-    if df.empty or len(df.columns) == 0:
-        raise ValueError("Excel export করার মতো data নেই।")
 
-    # Keep all real columns; clean_df has already repaired blank/unnamed names.
-    headers = [str(column).strip() for column in df.columns]
-    if any(not heading for heading in headers):
-        raise ValueError("এক বা একাধিক column heading ফাঁকা আছে।")
-
-    workbook = Workbook()
-    worksheet = workbook.active
-    worksheet.title = "Data"
-    worksheet.sheet_state = "visible"
-    worksheet.sheet_view.showGridLines = True
-    worksheet.sheet_view.showRowColHeaders = True
-    worksheet.sheet_view.zoomScale = 90
-
-    # Write the header row explicitly, then write records starting at row 2.
-    for col_num, heading in enumerate(headers, start=1):
-        cell = worksheet.cell(row=1, column=col_num, value=heading)
-        cell.font = Font(name="Arial", bold=True, color="FFFFFF", size=11)
-        cell.fill = PatternFill(fill_type="solid", fgColor="1F4E78")
-        cell.alignment = Alignment(
-            horizontal="center", vertical="center", wrap_text=False
-        )
-        cell.border = Border(
-            top=Side(style="thin", color="1F1F1F"),
-            bottom=Side(style="medium", color="1F1F1F"),
-            left=Side(style="thin", color="D9E2F3"),
-            right=Side(style="thin", color="D9E2F3"),
-        )
-
-    for row_num, record in enumerate(df.itertuples(index=False, name=None), start=2):
-        for col_num, value in enumerate(record, start=1):
-            if pd.isna(value):
-                value = None
-            worksheet.cell(row=row_num, column=col_num, value=value)
-
-    worksheet.row_dimensions[1].height = 28
-    # Do not freeze panes: some mobile spreadsheet viewers render frozen
-    # first rows incorrectly. The Excel Table below supplies filter controls.
-    worksheet.freeze_panes = None
-
-    # Set readable widths, with enough room for the full heading text.
-    for col_num, heading in enumerate(headers, start=1):
-        letter = get_column_letter(col_num)
-        longest_data = max(
-            (len(str(df.iloc[row, col_num - 1])) for row in range(len(df))),
-            default=0,
-        )
-        width = max(len(heading) + 4, min(longest_data + 3, 30), 16)
-        worksheet.column_dimensions[letter].width = min(width, 34)
-
-    for row in worksheet.iter_rows(min_row=2, max_row=worksheet.max_row):
-        for cell in row:
-            cell.alignment = Alignment(vertical="center", wrap_text=False)
-            cell.border = Border(
-                bottom=Side(style="thin", color="D8E3F0")
-            )
-
-    # A genuine Excel Table marks row 1 as the header row in Excel/mobile apps.
-    table = Table(displayName="AnalyzeDataTable", ref=worksheet.dimensions)
-    table.tableStyleInfo = TableStyleInfo(
-        name="TableStyleMedium2",
-        showFirstColumn=False,
-        showLastColumn=False,
-        showRowStripes=True,
-        showColumnStripes=False,
-    )
-    worksheet.add_table(table)
+def make_excel(sheets):
+    """Create a formatted multi-sheet Excel workbook with visible headings."""
+    if isinstance(sheets, pd.DataFrame):
+        sheets = {"Data": sheets}
 
     output = io.BytesIO()
+    workbook = Workbook()
+    default_sheet = workbook.active
+    workbook.remove(default_sheet)
+
+    used_sheet_names = set()
+    for original_name, source_df in sheets.items():
+        df = clean_df(source_df)
+        base_name = re.sub(r"[\[\]:*?/\\]", "_", str(original_name)).strip() or "Data"
+        base_name = base_name[:31]
+        sheet_name = base_name
+        suffix = 2
+        while sheet_name.casefold() in used_sheet_names:
+            tail = f"_{suffix}"
+            sheet_name = base_name[:31 - len(tail)] + tail
+            suffix += 1
+        used_sheet_names.add(sheet_name.casefold())
+
+        ws = workbook.create_sheet(title=sheet_name)
+        ws.sheet_state = "visible"
+        ws.sheet_view.showGridLines = True
+        ws.sheet_view.showRowColHeaders = True
+        ws.sheet_view.zoomScale = 90
+
+        if len(df.columns) == 0:
+            ws.cell(row=1, column=1, value="No columns")
+            continue
+
+        headers = unique_headers(list(df.columns))
+        for col_num, heading in enumerate(headers, start=1):
+            cell = ws.cell(row=1, column=col_num, value=str(heading))
+            cell.font = Font(name="Arial", bold=True, color="FFFFFF", size=11)
+            cell.fill = PatternFill(fill_type="solid", fgColor="1F4E78")
+            cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+            cell.border = Border(
+                top=Side(style="thin", color="1F1F1F"),
+                bottom=Side(style="medium", color="1F1F1F"),
+                left=Side(style="thin", color="D9E2F3"),
+                right=Side(style="thin", color="D9E2F3"),
+            )
+
+        for row_num, record in enumerate(df.itertuples(index=False, name=None), start=2):
+            for col_num, value in enumerate(record, start=1):
+                if pd.isna(value):
+                    value = None
+                if hasattr(value, "to_pydatetime"):
+                    value = value.to_pydatetime()
+                ws.cell(row=row_num, column=col_num, value=value)
+
+        ws.row_dimensions[1].height = 30
+        ws.freeze_panes = "A2"
+        for col_num, heading in enumerate(headers, start=1):
+            letter = get_column_letter(col_num)
+            longest = max(
+                (len(str(v)) for v in df.iloc[:, col_num - 1].dropna().head(500)),
+                default=0,
+            )
+            ws.column_dimensions[letter].width = min(max(len(str(heading)) + 3, longest + 2, 14), 36)
+
+        for row in ws.iter_rows(min_row=2, max_row=ws.max_row):
+            for cell in row:
+                cell.alignment = Alignment(vertical="center", wrap_text=False)
+                cell.border = Border(bottom=Side(style="thin", color="D8E3F0"))
+
+        if ws.max_row >= 2 and ws.max_column >= 1:
+            table = Table(displayName=f"Table{len(used_sheet_names)}", ref=ws.dimensions)
+            table.tableStyleInfo = TableStyleInfo(
+                name="TableStyleMedium2",
+                showFirstColumn=False,
+                showLastColumn=False,
+                showRowStripes=True,
+                showColumnStripes=False,
+            )
+            ws.add_table(table)
+
+    if not workbook.sheetnames:
+        workbook.create_sheet("Data")
     workbook.save(output)
     excel_bytes = output.getvalue()
 
-    # Re-open the actual saved bytes and verify every header is in row 1.
-    check_workbook = load_workbook(io.BytesIO(excel_bytes), read_only=False, data_only=False)
-    check_sheet = check_workbook["Data"]
-    saved_headers = [
-        check_sheet.cell(row=1, column=col_num).value
-        for col_num in range(1, len(headers) + 1)
-    ]
-    has_table = "AnalyzeDataTable" in check_sheet.tables
-    check_workbook.close()
-
-    if saved_headers != headers or not has_table:
-        raise ValueError("Excel export validation failed: header row/table is missing.")
-
+    # Verify that exported worksheets retain their first-row headings.
+    check = load_workbook(io.BytesIO(excel_bytes), read_only=False, data_only=False)
+    for ws in check.worksheets:
+        if ws.max_column > 0 and ws.max_row > 0:
+            if ws.cell(1, 1).value is None:
+                check.close()
+                raise ValueError("Excel export validation failed: heading row is empty.")
+    check.close()
     return excel_bytes
 
 
-# ---------------------------------------------------------
+# ------------------------------
 # GEMINI AI
-# ---------------------------------------------------------
+# ------------------------------
 def gemini_answer(prompt, df):
     try:
         key = st.secrets.get("GEMINI_API_KEY", None)
     except Exception:
         key = None
-
     key = key or os.getenv("GEMINI_API_KEY")
-
     if not key:
         return (
-            "Gemini এখনো সংযুক্ত নয়। Streamlit Cloud → App settings "
-            "→ Secrets-এ GEMINI_API_KEY যোগ করুন।"
+            "Gemini এখনো সংযুক্ত নয়। Streamlit Cloud → App settings → "
+            "Secrets-এ GEMINI_API_KEY যোগ করুন। API key app.py-তে লিখবেন না।"
         )
-
     from google import genai
-
     client = genai.Client(api_key=key)
-
-    context = (
-        "\n\nData sample (up to 30 rows):\n"
-        + df.head(30).to_csv(index=False)
-    )
-
-    result = client.models.generate_content(
+    context = "\n\nData sample (up to 40 rows):\n" + df.head(40).to_csv(index=False)
+    response = client.models.generate_content(
         model="gemini-2.5-flash",
         contents=prompt + context,
     )
+    return response.text or "AI কোনো উত্তর ফেরত দেয়নি।"
 
-    return result.text or "AI কোনো উত্তর ফেরত দেয়নি।"
+
+# ------------------------------
+# OFFICIAL WORK TEMPLATE LIBRARY
+# ------------------------------
+TEMPLATES = {
+    "HR & Employee": {
+        "Employee Details": ["Employee ID", "Employee Name", "Department", "Designation", "Joining Date", "Email", "Phone", "Status"],
+        "Attendance Register": ["Date", "Employee ID", "Employee Name", "Department", "Status", "In Time", "Out Time", "Working Hours"],
+        "Leave Register": ["Leave ID", "Employee ID", "Employee Name", "Leave Type", "From Date", "To Date", "Days", "Approval Status"],
+        "Recruitment Tracker": ["Candidate ID", "Candidate Name", "Position", "Department", "Application Date", "Interview Date", "Stage", "Result"],
+    },
+    "Payroll & Finance": {
+        "Employee Salary": ["Employee ID", "Employee Name", "Department", "Basic Salary", "HRA", "Other Allowance", "Deduction"],
+        "Cash Book": ["Date", "Voucher No", "Description", "Cash In", "Cash Out", "Balance", "Reference"],
+        "Expense Register": ["Date", "Expense ID", "Description", "Category", "Payment Method", "Amount", "Approved By"],
+        "Accounts Ledger": ["Date", "Voucher No", "Account Name", "Debit", "Credit", "Narration", "Reference"],
+        "Invoice Register": ["Invoice No", "Invoice Date", "Customer", "Description", "Quantity", "Unit Price", "Tax", "Total"],
+    },
+    "Business & Inventory": {
+        "Sales Report": ["Date", "Invoice No", "Customer", "Product", "Category", "Quantity", "Unit Price", "Total Sales"],
+        "Purchase Register": ["Date", "Purchase No", "Supplier", "Product", "Quantity", "Unit Cost", "Total Cost", "Payment Status"],
+        "Inventory Stock": ["Item Code", "Item Name", "Category", "Opening Stock", "Stock In", "Stock Out", "Closing Stock", "Reorder Level"],
+        "Supplier Details": ["Supplier ID", "Supplier Name", "Contact Person", "Phone", "Email", "Address", "Payment Terms"],
+        "Customer Details": ["Customer ID", "Customer Name", "Phone", "Email", "Address", "Opening Balance", "Status"],
+    },
+    "Education": {
+        "Student Register": ["Student ID", "Student Name", "Class", "Section", "Roll", "Date of Birth", "Guardian Name", "Phone"],
+        "Student Marks": ["Roll", "Student Name", "Subject", "Total Marks", "Marks Obtained", "Percentage", "Grade"],
+        "Fee Register": ["Receipt No", "Date", "Student ID", "Student Name", "Fee Type", "Amount Due", "Amount Paid", "Balance"],
+    },
+    "Healthcare": {
+        "Patient Register": ["Patient ID", "Patient Name", "Age", "Phone", "Address", "Registration Date", "Assigned Doctor"],
+        "Appointment Register": ["Appointment ID", "Date", "Time", "Patient ID", "Patient Name", "Doctor", "Department", "Status"],
+        "Pharmacy Stock": ["Medicine ID", "Medicine Name", "Batch No", "Expiry Date", "Quantity", "Unit Price", "Supplier"],
+    },
+    "Projects & Administration": {
+        "Project Tracker": ["Project ID", "Project Name", "Manager", "Department", "Start Date", "Due Date", "Budget", "Status"],
+        "Task Register": ["Task ID", "Task Name", "Assigned To", "Priority", "Start Date", "Due Date", "Status", "Remarks"],
+        "Asset Register": ["Asset ID", "Asset Name", "Category", "Location", "Purchase Date", "Cost", "Assigned To", "Condition"],
+        "Document Register": ["Document ID", "Document Title", "Document Type", "Department", "Received Date", "Owner", "Status", "Remarks"],
+        "Maintenance Log": ["Ticket ID", "Asset/Location", "Issue", "Reported Date", "Assigned To", "Completion Date", "Status"],
+        "Legal Case Register": ["Case No", "Court/Authority", "Parties", "Case Type", "Filing Date", "Next Hearing", "Responsible Person", "Status"],
+    },
+    "Logistics & Other Services": {
+        "Delivery Register": ["Shipment ID", "Date", "Sender", "Receiver", "Origin", "Destination", "Tracking No", "Delivery Status"],
+        "Vehicle Log": ["Date", "Vehicle No", "Driver", "Opening KM", "Closing KM", "Distance", "Fuel", "Purpose"],
+        "Hotel Booking": ["Booking ID", "Guest Name", "Check-in", "Check-out", "Room No", "Amount", "Payment Status"],
+        "Donation Register": ["Receipt No", "Date", "Donor Name", "Purpose", "Amount", "Payment Method", "Reference"],
+    },
+}
 
 
-# ---------------------------------------------------------
+# ------------------------------
 # SESSION STATE
-# ---------------------------------------------------------
-if "df" not in st.session_state:
-    st.session_state.df = pd.DataFrame()
-
+# ------------------------------
+if "sheets" not in st.session_state:
+    st.session_state.sheets = OrderedDict({"Data": pd.DataFrame()})
+if "active_sheet" not in st.session_state:
+    st.session_state.active_sheet = "Data"
 if "ai_result" not in st.session_state:
     st.session_state.ai_result = ""
+if "import_message" not in st.session_state:
+    st.session_state.import_message = ""
 
 
-# ---------------------------------------------------------
+def active_df():
+    name = st.session_state.active_sheet
+    if name not in st.session_state.sheets:
+        st.session_state.active_sheet = next(iter(st.session_state.sheets))
+        name = st.session_state.active_sheet
+    return st.session_state.sheets[name]
+
+
+# ------------------------------
 # SIDEBAR NAVIGATION
-# ---------------------------------------------------------
+# ------------------------------
 with st.sidebar:
     st.markdown("## 📊 AnalyzeData.io")
-    st.caption("AI Excel Generator")
+    st.caption("Universal Official Work & Excel System")
     st.markdown("---")
-
     page = st.radio(
         "NAVIGATION",
         [
             "🏠 Dashboard",
-            "✨ AI Excel Generator",
-            "📁 Templates",
+            "🌐 Universal Data Workspace",
+            "📁 Official Templates",
             "ℹ️ About",
         ],
     )
-
     st.markdown("---")
-    st.markdown("### CURRENT FEATURES")
+    st.markdown("### CORE FEATURES")
     st.markdown(
         """
         🟢 **CSV / XLSX Import**
 
-        🟢 **Paste & edit data**
+        🟢 **Multi-sheet workbook support**
 
-        🟢 **Excel export with headings**
+        🟢 **Automatic heading detection**
 
-        🟢 **Salary calculations**
+        🟢 **Data quality & analysis**
+
+        🟢 **Professional Excel export**
+
+        🟢 **Office work templates**
 
         🟡 **Gemini AI** — API key required
         """
     )
 
 
-# ---------------------------------------------------------
+# ------------------------------
 # DASHBOARD
-# ---------------------------------------------------------
+# ------------------------------
 if page == "🏠 Dashboard":
     st.markdown(
         """
         <div class="hero">
             <h1>AnalyzeData.io</h1>
-            <p>Turn messy data into clean, useful Excel workbooks.</p>
-            <p>Paste data · Upload files · Edit preview · Analyze with AI · Download Excel</p>
+            <p>Universal Official Work Management & Excel Analysis</p>
+            <p>Import · Understand · Edit · Analyze · Create reports · Export</p>
         </div>
         """,
         unsafe_allow_html=True,
     )
 
-    col1, col2, col3 = st.columns(3)
-
+    all_frames = list(st.session_state.sheets.values())
+    total_rows = sum(len(frame) for frame in all_frames)
+    total_columns = sum(len(frame.columns) for frame in all_frames)
+    col1, col2, col3, col4 = st.columns(4)
     cards = [
-        (col1, "Workbook builder", "Ready"),
-        (col2, "Editable preview", "Included"),
-        (col3, "Excel export", "Included"),
+        (col1, "Worksheets", len(all_frames)),
+        (col2, "Total records", total_rows),
+        (col3, "Total columns", total_columns),
+        (col4, "Templates", sum(len(v) for v in TEMPLATES.values())),
     ]
-
     for column, label, value in cards:
         with column:
             st.markdown(
-                f"""
-                <div class="metric-card">
-                    <div class="metric-label">{label}</div>
-                    <div class="metric-value">{value}</div>
-                </div>
-                """,
+                f'<div class="metric-card"><div class="metric-label">{label}</div>'
+                f'<div class="metric-value">{value:,}</div></div>',
                 unsafe_allow_html=True,
             )
 
-    st.subheader("শুরু করুন")
+    st.subheader("একটি কাজ বেছে নিন")
     st.write(
-        "বাম পাশের **AI Excel Generator** থেকে ডেটা পেস্ট করুন "
-        "অথবা CSV/XLSX ফাইল আপলোড করুন।"
+        "যেকোনো supported Excel/CSV workbook import করুন, অথবা Official Templates "
+        "থেকে HR, Finance, Business, Education, Healthcare, Project ও অন্যান্য কাজের "
+        "জন্য ready-made structure তৈরি করুন।"
     )
+    left, right = st.columns(2)
+    with left:
+        st.info("🌐 **Universal Data Workspace**\n\nফাইল upload, paste, edit, data quality check ও analysis করুন।")
+    with right:
+        st.info("📁 **Official Templates**\n\nবিভিন্ন বিভাগের কাজের জন্য ready-made column headings নিন।")
 
-    if not st.session_state.df.empty:
-        st.dataframe(
-            st.session_state.df,
-            use_container_width=True,
-        )
+    if total_rows:
+        st.subheader("বর্তমান Workbook")
+        for sheet_name, frame in st.session_state.sheets.items():
+            st.write(f"**{sheet_name}** — {len(frame)} rows × {len(frame.columns)} columns")
+            if not frame.empty:
+                st.dataframe(frame.head(5), use_container_width=True, hide_index=True)
 
 
-# ---------------------------------------------------------
-# AI EXCEL GENERATOR
-# ---------------------------------------------------------
-elif page == "✨ AI Excel Generator":
-    st.title("✨ AI Excel Generator")
+# ------------------------------
+# UNIVERSAL DATA WORKSPACE
+# ------------------------------
+elif page == "🌐 Universal Data Workspace":
+    st.title("🌐 Universal Data Workspace")
     st.caption(
-        "ডেটা পেস্ট করুন বা ফাইল আপলোড করুন। "
-        "Preview সম্পাদনা করে Excel ডাউনলোড করুন।"
+        "যেকোনো অফিসিয়াল বা business dataset import, inspect, edit, analyze এবং export করুন।"
     )
 
-    paste_tab, upload_tab = st.tabs(
-        ["📝 Paste data", "📤 Upload file"]
-    )
+    paste_tab, upload_tab = st.tabs(["📝 Paste data", "📤 Upload workbook"])
 
     with paste_tab:
         raw = st.text_area(
             "টেবিল ডেটা পেস্ট করুন (প্রথম লাইনে column heading রাখুন)",
-            height=180,
+            height=160,
             placeholder=(
-                "Employee ID,Employee Name,Department,Basic Salary,"
-                "HRA,Other Allowance,Deduction\n"
-                "EMP101,Rahul Das,Sales,18000,3000,2000,500"
+                "Employee ID,Employee Name,Department,Basic Salary,HRA,Deduction\n"
+                "EMP101,Rahul Das,Sales,18000,3000,500"
             ),
+            key="paste_data_area",
         )
-
-        if st.button(
-            "Convert pasted data",
-            use_container_width=True,
-        ):
+        if st.button("Import pasted data", use_container_width=True):
             try:
-                parsed = parse_data(raw)
-
+                parsed = parse_pasted_data(raw)
                 if parsed.empty:
                     st.warning("আগে কিছু ডেটা পেস্ট করুন।")
                 else:
-                    st.session_state.df = parsed
+                    st.session_state.sheets = OrderedDict({"Data": parsed})
+                    st.session_state.active_sheet = "Data"
                     st.session_state.ai_result = ""
-                    st.success(
-                        f"{len(parsed)}টি row এবং "
-                        f"{len(parsed.columns)}টি column পাওয়া গেছে।"
-                    )
+                    st.success(f"{len(parsed)}টি row এবং {len(parsed.columns)}টি column import হয়েছে।")
             except Exception as error:
                 st.error(str(error))
 
     with upload_tab:
         uploaded_file = st.file_uploader(
-            "CSV, XLSX বা XLS ফাইল বেছে নিন",
-            type=["csv", "xlsx", "xls", "tsv"],
+            "CSV, XLSX, XLSM, XLS বা TSV ফাইল বেছে নিন",
+            type=["csv", "xlsx", "xlsm", "xls", "tsv"],
+            key="universal_file_upload",
         )
-
         if uploaded_file is not None:
-            if st.button(
-                "Import uploaded file",
-                use_container_width=True,
-            ):
+            st.caption("Excel workbook হলে সব worksheet পড়ার চেষ্টা করা হবে।")
+            if st.button("Import workbook", use_container_width=True):
                 try:
-                    file_data = uploaded_file.getvalue()
-                    file_name = uploaded_file.name.lower()
-
-                    if file_name.endswith((".xlsx", ".xlsm", ".xls")):
-                        imported_df = pd.read_excel(
-                            io.BytesIO(file_data)
-                        )
-                    elif file_name.endswith(".tsv"):
-                        imported_df = pd.read_csv(
-                            io.BytesIO(file_data),
-                            sep="\t",
-                        )
-                    else:
-                        imported_df = pd.read_csv(
-                            io.BytesIO(file_data),
-                            sep=None,
-                            engine="python",
-                        )
-
-                    st.session_state.df = clean_df(imported_df)
-                    st.session_state.ai_result = ""
-
-                    st.success(
-                        f"{len(st.session_state.df)}টি row import হয়েছে।"
+                    imported = read_uploaded_workbook(uploaded_file)
+                    imported = OrderedDict(
+                        (name, frame) for name, frame in imported.items()
+                        if frame is not None
                     )
+                    if not imported:
+                        st.warning("ফাইলে কোনো worksheet data পাওয়া যায়নি।")
+                    else:
+                        st.session_state.sheets = imported
+                        st.session_state.active_sheet = next(iter(imported))
+                        st.session_state.ai_result = ""
+                        details = ", ".join(
+                            f"{name}: {len(frame)} rows"
+                            for name, frame in imported.items()
+                        )
+                        st.success(f"{len(imported)}টি worksheet import হয়েছে। {details}")
+                        st.info(
+                            "Heading auto-detection একটি best-effort ব্যবস্থা। "
+                            "নিচের Preview-তে heading পরীক্ষা করে প্রয়োজনে edit করুন।"
+                        )
                 except Exception as error:
-                    st.error(f"ফাইল পড়া যায়নি: {error}")
+                    st.error(
+                        f"ফাইল পড়া যায়নি: {error}. পুরোনো .xls ফাইলের জন্য xlrd package লাগতে পারে।"
+                    )
 
     st.divider()
     st.subheader("নতুন টেবিল তৈরি করুন")
-
     description = st.text_input(
         "কোন কোন column চান?",
         placeholder="Name, Department, Phone, Joining Date",
+        key="new_columns",
     )
-
+    new_sheet_name = st.text_input("Worksheet-এর নাম", value="New Data", key="new_sheet_name")
     if st.button("Create empty structure"):
-        columns = [
-            item.strip()
-            for item in re.split(r"[,;|]", description)
-            if item.strip()
-        ]
-
+        columns = [item.strip() for item in re.split(r"[,;|]", description) if item.strip()]
         if columns:
-            st.session_state.df = pd.DataFrame(columns=columns)
+            safe_name = new_sheet_name.strip() or "New Data"
+            st.session_state.sheets[safe_name] = pd.DataFrame(columns=unique_headers(columns))
+            st.session_state.active_sheet = safe_name
             st.session_state.ai_result = ""
-            st.success("নতুন empty structure তৈরি হয়েছে।")
+            st.success(f"{safe_name} worksheet তৈরি হয়েছে।")
         else:
             st.warning("কমা দিয়ে column-এর নাম লিখুন।")
 
-    # Show editor and export tools only when data exists.
-    if not st.session_state.df.empty:
+    if st.session_state.sheets:
+        sheet_names = list(st.session_state.sheets.keys())
+        if len(sheet_names) > 1:
+            selected = st.selectbox(
+                "কোন worksheet নিয়ে কাজ করবেন?",
+                sheet_names,
+                index=sheet_names.index(st.session_state.active_sheet)
+                if st.session_state.active_sheet in sheet_names else 0,
+            )
+            st.session_state.active_sheet = selected
+
+        current_name = st.session_state.active_sheet
+        current = active_df()
+
         st.divider()
-        st.subheader("📊 Excel Preview & Editor")
-        st.caption(
-            "নিচের cell-এ ক্লিক করে ডেটা পরিবর্তন করতে পারবেন। "
-            "Column heading-ও সম্পাদনা করা যাবে।"
-        )
-
-        edited_df = st.data_editor(
-            st.session_state.df,
-            num_rows="dynamic",
-            use_container_width=True,
-            hide_index=True,
-            key="main_data_editor",
-        )
-
-        st.session_state.df = clean_df(edited_df)
-
-        left, right = st.columns(2)
-
-        with left:
-            if st.button(
-                "🧮 Calculate salary",
+        st.subheader(f"📊 {current_name} — Preview & Editor")
+        if current.empty and len(current.columns) == 0:
+            st.info("এই worksheet-এ এখনো data নেই। উপরে data paste/upload করুন অথবা template নিন।")
+        else:
+            st.caption(
+                "Cell ও column heading সম্পাদনা করতে পারবেন। পরিবর্তন export-এ ব্যবহার হবে।"
+            )
+            edited = st.data_editor(
+                current,
+                num_rows="dynamic",
                 use_container_width=True,
-            ):
-                old_df = st.session_state.df.copy()
-                new_df = salary_calculations(old_df)
+                hide_index=True,
+                key=f"editor_{current_name}",
+            )
+            st.session_state.sheets[current_name] = clean_df(edited)
+            current = active_df()
 
-                if new_df.equals(old_df):
-                    st.warning(
-                        "Basic Salary column পাওয়া যায়নি। "
-                        "Column heading পরীক্ষা করুন।"
-                    )
+            overview_tab, quality_tab, analysis_tab = st.tabs(
+                ["📋 Overview", "🧹 Data Quality", "📈 Analysis"]
+            )
+            with overview_tab:
+                c1, c2, c3 = st.columns(3)
+                c1.metric("Rows", f"{len(current):,}")
+                c2.metric("Columns", f"{len(current.columns):,}")
+                c3.metric("Duplicate rows", f"{int(current.duplicated().sum()):,}")
+                st.dataframe(current, use_container_width=True, hide_index=True)
+
+            with quality_tab:
+                st.write("প্রতি Column-এর data type, missing value ও unique value:")
+                st.dataframe(data_profile(current), use_container_width=True, hide_index=True)
+                missing_total = int(current.isna().sum().sum()) if not current.empty else 0
+                duplicate_total = int(current.duplicated().sum()) if not current.empty else 0
+                st.write(f"**মোট missing cell:** {missing_total:,}")
+                st.write(f"**Duplicate row:** {duplicate_total:,}")
+                if duplicate_total:
+                    if st.button("Remove duplicate rows from this worksheet"):
+                        st.session_state.sheets[current_name] = current.drop_duplicates().reset_index(drop=True)
+                        st.success("Duplicate rows সরানো হয়েছে।")
+                        st.rerun()
+
+            with analysis_tab:
+                numeric = current.select_dtypes(include="number")
+                if numeric.empty:
+                    st.info("এই worksheet-এ numeric column পাওয়া যায়নি।")
                 else:
-                    st.session_state.df = new_df
-                    st.success(
-                        "Gross Salary এবং Net Salary হিসাব করা হয়েছে।"
+                    st.write("Numeric columns-এর summary:")
+                    st.dataframe(numeric.describe().T, use_container_width=True)
+                    selected_numeric = st.selectbox("একটি numeric column বেছে নিন", list(numeric.columns))
+                    st.metric(
+                        f"Total — {selected_numeric}",
+                        f"{numeric[selected_numeric].sum():,.2f}",
                     )
+
+            st.divider()
+            st.subheader("⚙️ Office calculations")
+            col_a, col_b, col_c = st.columns(3)
+            with col_a:
+                if st.button("🧮 Calculate salary", use_container_width=True):
+                    result = salary_calculations(current)
+                    if result.equals(current):
+                        st.warning("Basic Salary column পাওয়া যায়নি। Heading পরীক্ষা করুন।")
+                    else:
+                        st.session_state.sheets[current_name] = result
+                        st.success("Gross Salary এবং Net Salary হিসাব করা হয়েছে।")
+                        st.rerun()
+            with col_b:
+                if st.button("Trim text spaces", use_container_width=True):
+                    cleaned = current.copy()
+                    for column in cleaned.select_dtypes(include=["object"]).columns:
+                        cleaned[column] = cleaned[column].map(
+                            lambda value: value.strip() if isinstance(value, str) else value
+                        )
+                    st.session_state.sheets[current_name] = cleaned
+                    st.success("Text-এর অতিরিক্ত শুরু/শেষের space সরানো হয়েছে।")
+                    st.rerun()
+            with col_c:
+                if st.button("Clear this worksheet", use_container_width=True):
+                    st.session_state.sheets[current_name] = pd.DataFrame()
+                    st.session_state.ai_result = ""
                     st.rerun()
 
-        with right:
-            if st.button(
-                "🗑️ Clear current data",
-                use_container_width=True,
-            ):
-                st.session_state.df = pd.DataFrame()
-                st.session_state.ai_result = ""
-                st.rerun()
+            st.divider()
+            st.subheader("⬇️ Export workbook")
+            st.caption("সব worksheet একসঙ্গে একটি formatted XLSX ফাইলে export হবে।")
+            try:
+                export_sheets = OrderedDict(
+                    (name, salary_calculations(frame))
+                    for name, frame in st.session_state.sheets.items()
+                )
+                excel_bytes = make_excel(export_sheets)
+                st.download_button(
+                    "⬇️ Download Professional Excel Workbook",
+                    data=excel_bytes,
+                    file_name=f"AnalyzeData_{date.today().isoformat()}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True,
+                )
+            except Exception as error:
+                st.error(f"Excel তৈরি করা যায়নি: {error}")
 
-        st.subheader("Excel download")
-        st.caption(
-            "Excel ফাইলে প্রথম row-তে সব column heading থাকবে। "
-            "Employee data শুরু হবে দ্বিতীয় row থেকে।"
-        )
-
-        try:
-            export_df = salary_calculations(
-                st.session_state.df
+            st.divider()
+            st.subheader("🤖 Gemini AI Data Assistant")
+            question = st.text_area(
+                "এই worksheet সম্পর্কে AI-কে কী জিজ্ঞাসা করবেন?",
+                placeholder="এই data-এর summary দিন, missing value বা unusual record খুঁজুন...",
+                key="gemini_question",
             )
-
-            excel_bytes = make_excel(export_df)
-
-            st.download_button(
-                "⬇️ Download Professional Excel",
-                data=excel_bytes,
-                file_name=f"AnalyzeData_{date.today().isoformat()}.xlsx",
-                mime=(
-                    "application/vnd.openxmlformats-officedocument."
-                    "spreadsheetml.sheet"
-                ),
-                use_container_width=True,
-            )
-        except Exception as error:
-            st.error(f"Excel তৈরি করা যায়নি: {error}")
-
-        st.divider()
-        st.subheader("🤖 Gemini AI Data Assistant")
-
-        question = st.text_area(
-            "আপনার প্রশ্ন",
-            placeholder=(
-                "এই ডেটার summary দিন, ভুল বা missing value খুঁজুন..."
-            ),
-        )
-
-        if st.button("Ask Gemini AI"):
-            if question.strip():
-                with st.spinner("AI বিশ্লেষণ করছে..."):
-                    try:
-                        st.session_state.ai_result = gemini_answer(
-                            question,
-                            st.session_state.df,
-                        )
-                    except Exception as error:
-                        st.session_state.ai_result = (
-                            f"Gemini error: {error}"
-                        )
-            else:
-                st.warning("আগে একটি প্রশ্ন লিখুন।")
-
-        if st.session_state.ai_result:
-            st.markdown(st.session_state.ai_result)
+            if st.button("Ask Gemini AI"):
+                if question.strip():
+                    with st.spinner("AI বিশ্লেষণ করছে..."):
+                        try:
+                            st.session_state.ai_result = gemini_answer(question, current)
+                        except Exception as error:
+                            st.session_state.ai_result = f"Gemini error: {error}"
+                else:
+                    st.warning("আগে একটি প্রশ্ন লিখুন।")
+            if st.session_state.ai_result:
+                st.markdown(st.session_state.ai_result)
 
 
-# ---------------------------------------------------------
-# TEMPLATES
-# ---------------------------------------------------------
-elif page == "📁 Templates":
-    st.title("📁 Ready-made templates")
+# ------------------------------
+# OFFICIAL TEMPLATES
+# ------------------------------
+elif page == "📁 Official Templates":
+    st.title("📁 Official Work Templates")
     st.write(
-        "একটি template বেছে নিয়ে নিজের ডেটা দিয়ে পূরণ করুন।"
+        "বিভিন্ন ধরনের অফিসিয়াল কাজের জন্য ready-made column structures। "
+        "Template বেছে নিয়ে নিজের data যোগ করতে পারবেন।"
     )
-
-    templates = {
-        "Employee Salary": [
-            "Employee ID",
-            "Employee Name",
-            "Department",
-            "Basic Salary",
-            "HRA",
-            "Other Allowance",
-            "Deduction",
-        ],
-        "Student Marks": [
-            "Roll",
-            "Student Name",
-            "Subject",
-            "Total Marks",
-            "Marks Obtained",
-            "Grade",
-        ],
-        "Sales Report": [
-            "Date",
-            "Product",
-            "Category",
-            "Quantity",
-            "Unit Price",
-            "Total Sales",
-        ],
-        "Attendance": [
-            "Date",
-            "Employee Name",
-            "Department",
-            "Status",
-            "In Time",
-            "Out Time",
-        ],
-        "Expense Tracker": [
-            "Date",
-            "Description",
-            "Category",
-            "Payment Method",
-            "Amount",
-        ],
-    }
-
-    choice = st.selectbox(
-        "Template নির্বাচন করুন",
-        list(templates),
-    )
-
-    st.dataframe(
-        pd.DataFrame(columns=templates[choice]),
-        use_container_width=True,
-    )
-
-    if st.button("Use this template"):
-        st.session_state.df = pd.DataFrame(
-            columns=templates[choice]
-        )
+    category = st.selectbox("কাজের বিভাগ", list(TEMPLATES.keys()))
+    template_names = list(TEMPLATES[category].keys())
+    chosen = st.selectbox("Template নির্বাচন করুন", template_names)
+    columns = TEMPLATES[category][chosen]
+    st.subheader(chosen)
+    st.caption(f"{category} · {len(columns)}টি column")
+    st.dataframe(pd.DataFrame(columns=columns), use_container_width=True, hide_index=True)
+    if st.button("Use this template", use_container_width=True):
+        sheet_name = chosen
+        st.session_state.sheets[sheet_name] = pd.DataFrame(columns=columns)
+        st.session_state.active_sheet = sheet_name
         st.session_state.ai_result = ""
         st.success(
-            "Template তৈরি হয়েছে। AI Excel Generator পেজে যান।"
+            f"'{chosen}' template তৈরি হয়েছে। Universal Data Workspace-এ গিয়ে data যোগ করুন।"
         )
 
 
-# ---------------------------------------------------------
+# ------------------------------
 # ABOUT
-# ---------------------------------------------------------
+# ------------------------------
 else:
     st.title("ℹ️ About AnalyzeData.io")
     st.write(
-        "AnalyzeData.io একটি data-to-Excel workbook builder।"
+        "AnalyzeData.io হলো একটি configurable Universal Official Work ও Excel "
+        "workspace। এটি বিভিন্ন ধরনের tabular office/business data import, inspect, "
+        "edit, analyze, template তৈরি এবং Excel export করতে সাহায্য করে।"
     )
-
     st.markdown(
         """
-        **যা করতে পারবেন**
+        **বর্তমান সুবিধা**
+        - CSV, XLSX, XLSM, XLS ও TSV import
+        - Excel workbook-এর একাধিক worksheet import
+        - প্রথম দিকের rows থেকে সম্ভাব্য heading শনাক্ত করার চেষ্টা
+        - Data paste, edit ও নতুন table structure তৈরি
+        - Missing value, duplicate row ও column profile
+        - Numeric summary ও salary calculation
+        - HR, Finance, Business, Education, Healthcare, Project, Logistics ইত্যাদির templates
+        - Formatting ও heading-সহ multi-sheet Excel download
+        - Gemini API key থাকলে AI data assistant
 
-        - CSV, XLSX এবং TSV import
-        - Data paste ও cell editing
-        - Salary calculation
-        - Heading, filter ও formatting-সহ Excel download
-        - Gemini API key থাকলে AI data analysis
+        **গুরুত্বপূর্ণ সীমাবদ্ধতা**
+        - Heading detection স্বয়ংক্রিয় অনুমান; import-এর পরে Preview পরীক্ষা করা উচিত।
+        - সব দেশের সব সরকারি/বেসরকারি workflow এক কোডে আগে থেকেই সম্পূর্ণ তৈরি থাকে না।
+          Template ও configurable data workspace দিয়ে ধাপে ধাপে নতুন workflow যোগ করা যাবে।
+        - Tax, payroll, medical, legal বা regulatory হিসাব ব্যবহারের আগে সংশ্লিষ্ট দেশের
+          নিয়ম অনুযায়ী যাচাই করতে হবে।
         """
     )
-
     st.info(
-        "AI ব্যবহার করতে Streamlit Cloud → App settings → Secrets-এ "
+        "Gemini AI চালু করতে Streamlit Cloud → App settings → Secrets-এ "
         "GEMINI_API_KEY যোগ করুন। API key কখনো app.py-তে লিখবেন না।"
     )
