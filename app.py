@@ -762,44 +762,4 @@ elif page == "📁 Official Templates":
         sheet_name = chosen
         st.session_state.sheets[sheet_name] = pd.DataFrame(columns=columns)
         st.session_state.active_sheet = sheet_name
-        st.session_state.ai_result = ""
-        st.success(
-            f"'{chosen}' template তৈরি হয়েছে। Universal Data Workspace-এ গিয়ে data যোগ করুন।"
-        )
-
-
-# ------------------------------
-# ABOUT
-# ------------------------------
-else:
-    st.title("ℹ️ About AnalyzeData.io")
-    st.write(
-        "AnalyzeData.io হলো একটি configurable Universal Official Work ও Excel "
-        "workspace। এটি বিভিন্ন ধরনের tabular office/business data import, inspect, "
-        "edit, analyze, template তৈরি এবং Excel export করতে সাহায্য করে।"
-    )
-    st.markdown(
-        """
-        **বর্তমান সুবিধা**
-        - CSV, XLSX, XLSM, XLS ও TSV import
-        - Excel workbook-এর একাধিক worksheet import
-        - প্রথম দিকের rows থেকে সম্ভাব্য heading শনাক্ত করার চেষ্টা
-        - Data paste, edit ও নতুন table structure তৈরি
-        - Missing value, duplicate row ও column profile
-        - Numeric summary ও salary calculation
-        - HR, Finance, Business, Education, Healthcare, Project, Logistics ইত্যাদির templates
-        - Formatting ও heading-সহ multi-sheet Excel download
-        - Gemini API key থাকলে AI data assistant
-
-        **গুরুত্বপূর্ণ সীমাবদ্ধতা**
-        - Heading detection স্বয়ংক্রিয় অনুমান; import-এর পরে Preview পরীক্ষা করা উচিত।
-        - সব দেশের সব সরকারি/বেসরকারি workflow এক কোডে আগে থেকেই সম্পূর্ণ তৈরি থাকে না।
-          Template ও configurable data workspace দিয়ে ধাপে ধাপে নতুন workflow যোগ করা যাবে।
-        - Tax, payroll, medical, legal বা regulatory হিসাব ব্যবহারের আগে সংশ্লিষ্ট দেশের
-          নিয়ম অনুযায়ী যাচাই করতে হবে।
-        """
-    )
-    st.info(
-        "Gemini AI চালু করতে Streamlit Cloud → App settings → Secrets-এ "
-        "GEMINI_API_KEY যোগ করুন। API key কখনো app.py-তে লিখবেন না।"
-    )
+   
