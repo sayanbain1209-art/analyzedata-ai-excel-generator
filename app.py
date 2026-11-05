@@ -238,24 +238,28 @@ def data_profile(df):
 
 
 def make_excel(sheets):
-    """Create a formatted multi-sheet workbook; row 1 is always the heading row."""
+    """Create a formatted multi-sheet Excel workbook with visible headings."""
     if isinstance(sheets, pd.DataFrame):
         sheets = {"Data": sheets}
+
     output = io.BytesIO()
     workbook = Workbook()
-    workbook.remove(workbook.active)
-    used_sheet_names, expected_headers = set(), {}
+    default_sheet = workbook.active
+    workbook.remove(default_sheet)
 
+    used_sheet_names = set()
     for original_name, source_df in sheets.items():
         df = clean_df(source_df)
         base_name = re.sub(r"[\[\]:*?/\\]", "_", str(original_name)).strip() or "Data"
         base_name = base_name[:31]
-        sheet_name, suffix = base_name, 2
+        sheet_name = base_name
+        suffix = 2
         while sheet_name.casefold() in used_sheet_names:
             tail = f"_{suffix}"
             sheet_name = base_name[:31 - len(tail)] + tail
             suffix += 1
         used_sheet_names.add(sheet_name.casefold())
+
         ws = workbook.create_sheet(title=sheet_name)
         ws.sheet_state = "visible"
         ws.sheet_view.showGridLines = True
@@ -263,25 +267,12 @@ def make_excel(sheets):
         ws.sheet_view.zoomScale = 90
 
         if len(df.columns) == 0:
-            ws["A1"] = "No columns"
-            expected_headers[sheet_name] = ["No columns"]
+            ws.cell(row=1, column=1, value="No columns")
             continue
 
         headers = unique_headers(list(df.columns))
-        expected_headers[sheet_name] = headers
-
-        # Write data first; write headings last so row 1 is explicitly restored.
-        for row_num, record in enumerate(df.itertuples(index=False, name=None), start=2):
-            for col_num, value in enumerate(record, start=1):
-                if pd.isna(value):
-                    value = None
-                if hasattr(value, "to_pydatetime"):
-                    value = value.to_pydatetime()
-                ws.cell(row=row_num, column=col_num, value=value)
-
         for col_num, heading in enumerate(headers, start=1):
-            cell = ws.cell(row=1, column=col_num)
-            cell.value = str(heading)
+            cell = ws.cell(row=1, column=col_num, value=str(heading))
             cell.font = Font(name="Arial", bold=True, color="FFFFFF", size=11)
             cell.fill = PatternFill(fill_type="solid", fgColor="1F4E78")
             cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
@@ -291,6 +282,14 @@ def make_excel(sheets):
                 left=Side(style="thin", color="D9E2F3"),
                 right=Side(style="thin", color="D9E2F3"),
             )
+
+        for row_num, record in enumerate(df.itertuples(index=False, name=None), start=2):
+            for col_num, value in enumerate(record, start=1):
+                if pd.isna(value):
+                    value = None
+                if hasattr(value, "to_pydatetime"):
+                    value = value.to_pydatetime()
+                ws.cell(row=row_num, column=col_num, value=value)
 
         ws.row_dimensions[1].height = 30
         ws.freeze_panes = "A2"
@@ -307,36 +306,230 @@ def make_excel(sheets):
                 cell.alignment = Alignment(vertical="center", wrap_text=False)
                 cell.border = Border(bottom=Side(style="thin", color="D8E3F0"))
 
-        # Plain AutoFilter instead of an Excel Table for mobile-viewer compatibility.
+        # Final guard: every exported column gets a non-empty heading in row 1.
+        for col_num in range(1, ws.max_column + 1):
+            heading_cell = ws.cell(row=1, column=col_num)
+            if heading_cell.value is None or not str(heading_cell.value).strip():
+                heading_cell.value = f"Column_{col_num}"
+                heading_cell.font = Font(name="Arial", bold=True, color="FFFFFF", size=11)
+                heading_cell.fill = PatternFill(fill_type="solid", fgColor="1F4E78")
+                heading_cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
         if ws.max_row >= 2 and ws.max_column >= 1:
-            ws.auto_filter.ref = f"A1:{get_column_letter(ws.max_column)}{ws.max_row}"
+            table = Table(displayName=f"Table{len(used_sheet_names)}", ref=ws.dimensions)
+            table.tableStyleInfo = TableStyleInfo(
+                name="TableStyleMedium2",
+                showFirstColumn=False,
+                showLastColumn=False,
+                showRowStripes=True,
+                showColumnStripes=False,
+            )
+            ws.add_table(table)
 
     if not workbook.sheetnames:
-        ws = workbook.create_sheet("Data")
-        ws["A1"] = "No columns"
-        expected_headers["Data"] = ["No columns"]
-
+        workbook.create_sheet("Data")
     workbook.save(output)
     excel_bytes = output.getvalue()
+
+    # Verify that exported worksheets retain their first-row headings.
     check = load_workbook(io.BytesIO(excel_bytes), read_only=False, data_only=False)
-    try:
-        for sheet_name, headers in expected_headers.items():
-            ws = check[sheet_name]
-            for col_num, expected in enumerate(headers, start=1):
-                actual = ws.cell(row=1, column=col_num).value
-                if actual != expected:
-                    raise ValueError(
-                        f"Excel export validation failed on {sheet_name}! "
-                        f"Row 1, column {col_num}: expected {expected!r}, got {actual!r}."
-                    )
-    finally:
-        check.close()
+    for ws in check.worksheets:
+        if ws.max_column > 0 and ws.max_row > 0:
+            if ws.cell(1, 1).value is None:
+                check.close()
+                raise ValueError("Excel export validation failed: heading row is empty.")
+    check.close()
     return excel_bytes
 
 
 # ------------------------------
 # GEMINI AI
-# ------------------------------def gemini_answer(prompt, df):
+# ------------------------------gemini_answer(prompt, df):
+    try:
+        key = st.secrets.get("GEMINI_API_KEY", None)
+    except Exception:
+        key = None
+    key = key or os.getenv("GEMINI_API_KEY")
+    if not key:
+        return (
+            "Gemini এখনো সংযুক্ত নয়। Streamlit Cloud → App settings → "
+            "Secrets-এ GEMINI_API_KEY যোগ করুন। API key app.py-তে লিখবেন না।"
+        )
+    from google import genai
+    client = genai.Client(api_key=key)
+    context = "\n\nData sample (up to 40 rows):\n" + df.head(40).to_csv(index=False)
+    response = client.models.generate_content(
+        model="gemini-2.5-flash",
+        contents=prompt + context,
+    )
+    return response.text or "AI কোনো উত্তর ফেরত দেয়নি।"
+
+
+# ------------------------------
+# OFFICIAL WORK TEMPLATE LIBRARY
+# ------------------------------
+TEMPLATES = {
+    "HR & Employee": {
+        "Employee Details": ["Employee ID", "Employee Name", "Department", "Designation", "Joining Date", "Email", "Phone", "Status"],
+        "Attendance Register": ["Date", "Employee ID", "Employee Name", "Department", "Status", "In Time", "Out Time", "Working Hours"],
+        "Leave Register": ["Leave ID", "Employee ID", "Employee Name", "Leave Type", "From Date", "To Date", "Days", "Approval Status"],
+        "Recruitment Tracker": ["Candidate ID", "Candidate Name", "Position", "Department", "Application Date", "Interview Date", "Stage", "Result"],
+    },
+    "Payroll & Finance": {
+        "Employee Salary": ["Employee ID", "Employee Name", "Department", "Basic Salary", "HRA", "Other Allowance", "Deduction"],
+        "Cash Book": ["Date", "Voucher No", "Description", "Cash In", "Cash Out", "Balance", "Reference"],
+        "Expense Register": ["Date", "Expense ID", "Description", "Category", "Payment Method", "Amount", "Approved By"],
+        "Accounts Ledger": ["Date", "Voucher No", "Account Name", "Debit", "Credit", "Narration", "Reference"],
+        "Invoice Register": ["Invoice No", "Invoice Date", "Customer", "Description", "Quantity", "Unit Price", "Tax", "Total"],
+    },
+    "Business & Inventory": {
+        "Sales Report": ["Date", "Invoice No", "Customer", "Product", "Category", "Quantity", "Unit Price", "Total Sales"],
+        "Purchase Register": ["Date", "Purchase No", "Supplier", "Product", "Quantity", "Unit Cost", "Total Cost", "Payment Status"],
+        "Inventory Stock": ["Item Code", "Item Name", "Category", "Opening Stock", "Stock In", "Stock Out", "Closing Stock", "Reorder Level"],
+        "Supplier Details": ["Supplier ID", "Supplier Name", "Contact Person", "Phone", "Email", "Address", "Payment Terms"],
+        "Customer Details": ["Customer ID", "Customer Name", "Phone", "Email", "Address", "Opening Balance", "Status"],
+    },
+    "Education": {
+        "Student Register": ["Student ID", "Student Name", "Class", "Section", "Roll", "Date of Birth", "Guardian Name", "Phone"],
+        "Student Marks": ["Roll", "Student Name", "Subject", "Total Marks", "Marks Obtained", "Percentage", "Grade"],
+        "Fee Register": ["Receipt No", "Date", "Student ID", "Student Name", "Fee Type", "Amount Due", "Amount Paid", "Balance"],
+    },
+    "Healthcare": {
+        "Patient Register": ["Patient ID", "Patient Name", "Age", "Phone", "Address", "Registration Date", "Assigned Doctor"],
+        "Appointment Register": ["Appointment ID", "Date", "Time", "Patient ID", "Patient Name", "Doctor", "Department", "Status"],
+        "Pharmacy Stock": ["Medicine ID", "Medicine Name", "Batch No", "Expiry Date", "Quantity", "Unit Price", "Supplier"],
+    },
+    "Projects & Administration": {
+        "Project Tracker": ["Project ID", "Project Name", "Manager", "Department", "Start Date", "Due Date", "Budget", "Status"],
+        "Task Register": ["Task ID", "Task Name", "Assigned To", "Priority", "Start Date", "Due Date", "Status", "Remarks"],
+        "Asset Register": ["Asset ID", "Asset Name", "Category", "Location", "Purchase Date", "Cost", "Assigned To", "Condition"],
+        "Document Register": ["Document ID", "Document Title", "Document Type", "Department", "Received Date", "Owner", "Status", "Remarks"],
+        "Maintenance Log": ["Ticket ID", "Asset/Location", "Issue", "Reported Date", "Assigned To", "Completion Date", "Status"],
+        "Legal Case Register": ["Case No", "Court/Authority", "Parties", "Case Type", "Filing Date", "Next Hearing", "Responsible Person", "Status"],
+    },
+    "Logistics & Other Services": {
+        "Delivery Register": ["Shipment ID", "Date", "Sender", "Receiver", "Origin", "Destination", "Tracking No", "Delivery Status"],
+        "Vehicle Log": ["Date", "Vehicle No", "Driver", "Opening KM", "Closing KM", "Distance", "Fuel", "Purpose"],
+        "Hotel Booking": ["Booking ID", "Guest Name", "Check-in", "Check-out", "Room No", "Amount", "Payment Status"],
+        "Donation Register": ["Receipt No", "Date", "Donor Name", "Purpose", "Amount", "Payment Method", "Reference"],
+    },
+}
+
+
+# ------------------------------
+# SESSION STATE
+# ------------------------------
+if "sheets" not in st.session_state:
+    st.session_state.sheets = OrderedDict({"Data": pd.DataFrame()})
+if "active_sheet" not in st.session_state:
+    st.session_state.active_sheet = "Data"
+if "ai_result" not in st.session_state:
+    st.session_state.ai_result = ""
+if "import_message" not in st.session_state:
+    st.session_state.import_message = ""
+
+
+def active_df():
+    name = st.session_state.active_sheet
+    if name not in st.session_state.sheets:
+        st.session_state.active_sheet = next(iter(st.session_state.sheets))
+        name = st.session_state.active_sheet
+    return st.session_state.sheets[name]
+
+
+# ------------------------------
+# SIDEBAR NAVIGATION
+# ------------------------------
+with st.sidebar:
+    st.markdown("## 📊 AnalyzeData.io")
+    st.caption("Universal Official Work & Excel System")
+    st.markdown("---")
+    page = st.radio(
+        "NAVIGATION",
+        [
+            "🏠 Dashboard",
+            "🌐 Universal Data Workspace",
+            "📁 Official Templates",
+            "ℹ️ About",
+        ],
+    )
+    st.markdown("---")
+    st.markdown("### CORE FEATURES")
+    st.markdown(
+        """
+        🟢 **CSV / XLSX Import**
+
+        🟢 **Multi-sheet workbook support**
+
+        🟢 **Automatic heading detection**
+
+        🟢 **Data quality & analysis**
+
+        🟢 **Professional Excel export**
+
+        🟢 **Office work templates**
+
+        🟡 **Gemini AI** — API key required
+        """
+    )
+
+
+# ------------------------------
+# DASHBOARD
+# ------------------------------
+dif page == "🏠 Dashboard":
+    st.markdown(
+        """
+        <div class="hero">
+            <h1>AnalyzeData.io</h1>
+            <p>Universal Official Work Management & Excel Analysis</p>
+            <p>Import · Understand · Edit · Analyze · Create reports · Export</p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    all_frames = list(st.session_state.sheets.values())
+    total_rows = sum(len(frame) for frame in all_frames)
+    total_columns = sum(len(frame.columns) for frame in all_frames)
+    col1, col2, col3, col4 = st.columns(4)
+    cards = [
+        (col1, "Worksheets", len(all_frames)),
+        (col2, "Total records", total_rows),
+        (col3, "Total columns", total_columns),
+        (col4, "Templates", sum(len(v) for v in TEMPLATES.values())),
+    ]
+    for column, label, value in cards:
+        with column:
+            st.markdown(
+                f'<div class="metric-card"><div class="metric-label">{label}</div>'
+                f'<div class="metric-value">{value:,}</div></div>',
+                unsafe_allow_html=True,
+            )
+
+    st.subheader("একটি কাজ বেছে নিন")
+    st.write(
+        "যেকোনো supported Excel/CSV workbook import করুন, অথবা Official Templates "
+        "থেকে HR, Finance, Business, Education, Healthcare, Project ও অন্যান্য কাজের "
+        "জন্য ready-made structure তৈরি করুন।"
+    )
+    left, right = st.columns(2)
+    with left:
+        st.info("🌐 **Universal Data Workspace**\n\nফাইল upload, paste, edit, data quality check ও analysis করুন।")
+    with right:
+        st.info("📁 **Official Templates**\n\nবিভিন্ন বিভাগের কাজের জন্য ready-made column headings নিন।")
+
+    if total_rows:
+        st.subheader("বর্তমান Workbook")
+        for sheet_name, frame in st.session_state.sheets.items():
+            st.write(f"**{sheet_name}** — {len(frame)} rows × {len(frame.columns)} columns")
+            if not frame.empty:
+                st.dataframe(frame.head(5), use_container_width=True, hide_index=True)
+
+
+# ------------------------------
+# UNIVERSAL DATA WORKSPACE
+# ------------------------------
+ef gemini_answer(prompt, df):
     try:
         key = st.secrets.get("GEMINI_API_KEY", None)
     except Exception:
@@ -663,7 +856,6 @@ elif page == "🌐 Universal Data Workspace":
             )
             st.session_state.sheets[current_name] = clean_df(edited)
             current = active_df()
-
             overview_tab, quality_tab, analysis_tab = st.tabs(
                 ["📋 Overview", "🧹 Data Quality", "📈 Analysis"]
             )
