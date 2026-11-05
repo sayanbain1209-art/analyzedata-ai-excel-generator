@@ -96,16 +96,27 @@ def clean_df(df):
 
 def detect_header_row(raw_df, max_rows=15):
     """
-    Use the first non-empty worksheet row as the column headings.
-    The exported workbook then writes those headings into Excel row 1.
+    Estimate a header row from the first rows of a worksheet.
+    This is a best-effort heuristic; users can inspect and edit headings later.
     """
     if raw_df is None or raw_df.empty:
         return 0
+    best_row, best_score = 0, -1
     for row_index in range(min(len(raw_df), max_rows)):
         row = raw_df.iloc[row_index].tolist()
-        if any(not pd.isna(value) and str(value).strip() for value in row):
-            return row_index
-    return 0
+        values = [v for v in row if not pd.isna(v) and str(v).strip() != ""]
+        if not values:
+            continue
+        text_count = sum(isinstance(v, str) for v in values)
+        unique_count = len({str(v).strip().casefold() for v in values})
+        nonempty = len(values)
+        # Headers are commonly text-heavy and contain distinct labels.
+        score = nonempty * 2 + (text_count / nonempty) * 3 + (unique_count / nonempty)
+        # Prefer earlier rows when scores are close.
+        score -= row_index * 0.025
+        if score > best_score:
+            best_row, best_score = row_index, score
+    return best_row
 
 
 def dataframe_from_raw(raw_df):
@@ -226,6 +237,27 @@ def data_profile(df):
     return pd.DataFrame(rows)
 
 
+def export_headers_for_sheet(sheet_name, df):
+    """Return meaningful, non-empty headings for every exported column."""
+    headers = unique_headers(list(df.columns))
+    placeholders = all(
+        str(h).strip().casefold() in {f"column_{i}".casefold(), f"unnamed: {i-1}".casefold(), ""}
+        for i, h in enumerate(headers, start=1)
+    )
+    if not placeholders:
+        return headers
+
+    # Reuse the matching official template when the worksheet name identifies it.
+    for category_templates in TEMPLATES.values():
+        for template_name, template_headers in category_templates.items():
+            if str(template_name).strip().casefold() == str(sheet_name).strip().casefold():
+                if len(template_headers) == len(headers):
+                    return list(template_headers)
+
+    # Never leave blank/Unnamed headings in an exported workbook.
+    return [f"Field {i}" for i in range(1, len(headers) + 1)]
+
+
 def make_excel(sheets):
     """Create a formatted multi-sheet Excel workbook with visible headings."""
     if isinstance(sheets, pd.DataFrame):
@@ -259,7 +291,7 @@ def make_excel(sheets):
             ws.cell(row=1, column=1, value="No columns")
             continue
 
-        headers = unique_headers(list(df.columns))
+        headers = export_headers_for_sheet(original_name, df)
         for col_num, heading in enumerate(headers, start=1):
             cell = ws.cell(row=1, column=col_num, value=str(heading))
             cell.font = Font(name="Arial", bold=True, color="FFFFFF", size=11)
@@ -322,10 +354,19 @@ def make_excel(sheets):
     # Verify that exported worksheets retain their first-row headings.
     check = load_workbook(io.BytesIO(excel_bytes), read_only=False, data_only=False)
     for ws in check.worksheets:
-        if ws.max_column > 0 and ws.max_row > 0:
-            if ws.cell(1, 1).value is None:
+        if ws.max_column > 0:
+            for col_num in range(1, ws.max_column + 1):
+                value = ws.cell(1, col_num).value
+                if value is None or not str(value).strip():
+                    check.close()
+                    raise ValueError(
+                        f"Excel export validation failed: blank heading in {ws.title}, column {col_num}."
+                    )
+            if ws.freeze_panes != "A2":
                 check.close()
-                raise ValueError("Excel export validation failed: heading row is empty.")
+                raise ValueError(
+                    f"Excel export validation failed: data/header boundary is incorrect in {ws.title}."
+                )
     check.close()
     return excel_bytes
 
