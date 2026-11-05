@@ -326,7 +326,9 @@ def make_excel(sheets):
                     value = value.to_pydatetime()
                 ws.cell(row=row_num, column=col_num, value=value)
 
-        ws.row_dimensions[1].height = 32
+        # Give the heading row enough height and each column enough width
+        # so subject-specific headings are comfortably readable.
+        ws.row_dimensions[1].height = 36
         ws.freeze_panes = "A2"
         ws.auto_filter.ref = f"A1:{get_column_letter(len(headers))}{max(ws.max_row, 1)}"
 
@@ -336,8 +338,10 @@ def make_excel(sheets):
                 (len(str(v)) for v in df.iloc[:, col_num - 1].dropna().head(500)),
                 default=0,
             )
+            # Prioritize the full heading; allow wider columns for longer names.
+            heading_width = len(str(heading)) + 6
             ws.column_dimensions[letter].width = min(
-                max(len(str(heading)) + 3, longest + 2, 14), 36
+                max(heading_width, longest + 2, 16), 42
             )
 
         for row in ws.iter_rows(min_row=2, max_row=ws.max_row):
