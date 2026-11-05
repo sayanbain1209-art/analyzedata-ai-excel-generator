@@ -420,7 +420,7 @@ TEMPLATES = {
 # SESSION STATE
 # ------------------------------
 if "sheets" not in st.session_state:
-st.session_state.sheets = OrderedDict({"Data": pd.DataFrame()})
+    st.session_state.sheets = OrderedDict({"Data": pd.DataFrame()})
 if "active_sheet" not in st.session_state:
     st.session_state.active_sheet = "Data"
 if "ai_result" not in st.session_state:
