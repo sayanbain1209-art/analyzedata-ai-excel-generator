@@ -343,7 +343,8 @@ def make_excel(sheets):
 
 # ------------------------------
 # GEMINI AI
-# ------------------------------gemini_answer(prompt, df):
+# ------------------------------
+def gemini_answer(prompt, df):
     try:
         key = st.secrets.get("GEMINI_API_KEY", None)
     except Exception:
@@ -419,193 +420,7 @@ TEMPLATES = {
 # SESSION STATE
 # ------------------------------
 if "sheets" not in st.session_state:
-    st.session_state.sheets = OrderedDict({"Data": pd.DataFrame()})
-if "active_sheet" not in st.session_state:
-    st.session_state.active_sheet = "Data"
-if "ai_result" not in st.session_state:
-    st.session_state.ai_result = ""
-if "import_message" not in st.session_state:
-    st.session_state.import_message = ""
-
-
-def active_df():
-    name = st.session_state.active_sheet
-    if name not in st.session_state.sheets:
-        st.session_state.active_sheet = next(iter(st.session_state.sheets))
-        name = st.session_state.active_sheet
-    return st.session_state.sheets[name]
-
-
-# ------------------------------
-# SIDEBAR NAVIGATION
-# ------------------------------
-with st.sidebar:
-    st.markdown("## 📊 AnalyzeData.io")
-    st.caption("Universal Official Work & Excel System")
-    st.markdown("---")
-    page = st.radio(
-        "NAVIGATION",
-        [
-            "🏠 Dashboard",
-            "🌐 Universal Data Workspace",
-            "📁 Official Templates",
-            "ℹ️ About",
-        ],
-    )
-    st.markdown("---")
-    st.markdown("### CORE FEATURES")
-    st.markdown(
-        """
-        🟢 **CSV / XLSX Import**
-
-        🟢 **Multi-sheet workbook support**
-
-        🟢 **Automatic heading detection**
-
-        🟢 **Data quality & analysis**
-
-        🟢 **Professional Excel export**
-
-        🟢 **Office work templates**
-
-        🟡 **Gemini AI** — API key required
-        """
-    )
-
-
-# ------------------------------
-# DASHBOARD
-# ------------------------------
-dif page == "🏠 Dashboard":
-    st.markdown(
-        """
-        <div class="hero">
-            <h1>AnalyzeData.io</h1>
-            <p>Universal Official Work Management & Excel Analysis</p>
-            <p>Import · Understand · Edit · Analyze · Create reports · Export</p>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    all_frames = list(st.session_state.sheets.values())
-    total_rows = sum(len(frame) for frame in all_frames)
-    total_columns = sum(len(frame.columns) for frame in all_frames)
-    col1, col2, col3, col4 = st.columns(4)
-    cards = [
-        (col1, "Worksheets", len(all_frames)),
-        (col2, "Total records", total_rows),
-        (col3, "Total columns", total_columns),
-        (col4, "Templates", sum(len(v) for v in TEMPLATES.values())),
-    ]
-    for column, label, value in cards:
-        with column:
-            st.markdown(
-                f'<div class="metric-card"><div class="metric-label">{label}</div>'
-                f'<div class="metric-value">{value:,}</div></div>',
-                unsafe_allow_html=True,
-            )
-
-    st.subheader("একটি কাজ বেছে নিন")
-    st.write(
-        "যেকোনো supported Excel/CSV workbook import করুন, অথবা Official Templates "
-        "থেকে HR, Finance, Business, Education, Healthcare, Project ও অন্যান্য কাজের "
-        "জন্য ready-made structure তৈরি করুন।"
-    )
-    left, right = st.columns(2)
-    with left:
-        st.info("🌐 **Universal Data Workspace**\n\nফাইল upload, paste, edit, data quality check ও analysis করুন।")
-    with right:
-        st.info("📁 **Official Templates**\n\nবিভিন্ন বিভাগের কাজের জন্য ready-made column headings নিন।")
-
-    if total_rows:
-        st.subheader("বর্তমান Workbook")
-        for sheet_name, frame in st.session_state.sheets.items():
-            st.write(f"**{sheet_name}** — {len(frame)} rows × {len(frame.columns)} columns")
-            if not frame.empty:
-                st.dataframe(frame.head(5), use_container_width=True, hide_index=True)
-
-
-# ------------------------------
-# UNIVERSAL DATA WORKSPACE
-# ------------------------------
-ef gemini_answer(prompt, df):
-    try:
-        key = st.secrets.get("GEMINI_API_KEY", None)
-    except Exception:
-        key = None
-    key = key or os.getenv("GEMINI_API_KEY")
-    if not key:
-        return (
-            "Gemini এখনো সংযুক্ত নয়। Streamlit Cloud → App settings → "
-            "Secrets-এ GEMINI_API_KEY যোগ করুন। API key app.py-তে লিখবেন না।"
-        )
-    from google import genai
-    client = genai.Client(api_key=key)
-    context = "\n\nData sample (up to 40 rows):\n" + df.head(40).to_csv(index=False)
-    response = client.models.generate_content(
-        model="gemini-2.5-flash",
-        contents=prompt + context,
-    )
-    return response.text or "AI কোনো উত্তর ফেরত দেয়নি।"
-
-
-# ------------------------------
-# OFFICIAL WORK TEMPLATE LIBRARY
-# ------------------------------
-TEMPLATES = {
-    "HR & Employee": {
-        "Employee Details": ["Employee ID", "Employee Name", "Department", "Designation", "Joining Date", "Email", "Phone", "Status"],
-        "Attendance Register": ["Date", "Employee ID", "Employee Name", "Department", "Status", "In Time", "Out Time", "Working Hours"],
-        "Leave Register": ["Leave ID", "Employee ID", "Employee Name", "Leave Type", "From Date", "To Date", "Days", "Approval Status"],
-        "Recruitment Tracker": ["Candidate ID", "Candidate Name", "Position", "Department", "Application Date", "Interview Date", "Stage", "Result"],
-    },
-    "Payroll & Finance": {
-        "Employee Salary": ["Employee ID", "Employee Name", "Department", "Basic Salary", "HRA", "Other Allowance", "Deduction"],
-        "Cash Book": ["Date", "Voucher No", "Description", "Cash In", "Cash Out", "Balance", "Reference"],
-        "Expense Register": ["Date", "Expense ID", "Description", "Category", "Payment Method", "Amount", "Approved By"],
-        "Accounts Ledger": ["Date", "Voucher No", "Account Name", "Debit", "Credit", "Narration", "Reference"],
-        "Invoice Register": ["Invoice No", "Invoice Date", "Customer", "Description", "Quantity", "Unit Price", "Tax", "Total"],
-    },
-    "Business & Inventory": {
-        "Sales Report": ["Date", "Invoice No", "Customer", "Product", "Category", "Quantity", "Unit Price", "Total Sales"],
-        "Purchase Register": ["Date", "Purchase No", "Supplier", "Product", "Quantity", "Unit Cost", "Total Cost", "Payment Status"],
-        "Inventory Stock": ["Item Code", "Item Name", "Category", "Opening Stock", "Stock In", "Stock Out", "Closing Stock", "Reorder Level"],
-        "Supplier Details": ["Supplier ID", "Supplier Name", "Contact Person", "Phone", "Email", "Address", "Payment Terms"],
-        "Customer Details": ["Customer ID", "Customer Name", "Phone", "Email", "Address", "Opening Balance", "Status"],
-    },
-    "Education": {
-        "Student Register": ["Student ID", "Student Name", "Class", "Section", "Roll", "Date of Birth", "Guardian Name", "Phone"],
-        "Student Marks": ["Roll", "Student Name", "Subject", "Total Marks", "Marks Obtained", "Percentage", "Grade"],
-        "Fee Register": ["Receipt No", "Date", "Student ID", "Student Name", "Fee Type", "Amount Due", "Amount Paid", "Balance"],
-    },
-    "Healthcare": {
-        "Patient Register": ["Patient ID", "Patient Name", "Age", "Phone", "Address", "Registration Date", "Assigned Doctor"],
-        "Appointment Register": ["Appointment ID", "Date", "Time", "Patient ID", "Patient Name", "Doctor", "Department", "Status"],
-        "Pharmacy Stock": ["Medicine ID", "Medicine Name", "Batch No", "Expiry Date", "Quantity", "Unit Price", "Supplier"],
-    },
-    "Projects & Administration": {
-        "Project Tracker": ["Project ID", "Project Name", "Manager", "Department", "Start Date", "Due Date", "Budget", "Status"],
-        "Task Register": ["Task ID", "Task Name", "Assigned To", "Priority", "Start Date", "Due Date", "Status", "Remarks"],
-        "Asset Register": ["Asset ID", "Asset Name", "Category", "Location", "Purchase Date", "Cost", "Assigned To", "Condition"],
-        "Document Register": ["Document ID", "Document Title", "Document Type", "Department", "Received Date", "Owner", "Status", "Remarks"],
-        "Maintenance Log": ["Ticket ID", "Asset/Location", "Issue", "Reported Date", "Assigned To", "Completion Date", "Status"],
-        "Legal Case Register": ["Case No", "Court/Authority", "Parties", "Case Type", "Filing Date", "Next Hearing", "Responsible Person", "Status"],
-    },
-    "Logistics & Other Services": {
-        "Delivery Register": ["Shipment ID", "Date", "Sender", "Receiver", "Origin", "Destination", "Tracking No", "Delivery Status"],
-        "Vehicle Log": ["Date", "Vehicle No", "Driver", "Opening KM", "Closing KM", "Distance", "Fuel", "Purpose"],
-        "Hotel Booking": ["Booking ID", "Guest Name", "Check-in", "Check-out", "Room No", "Amount", "Payment Status"],
-        "Donation Register": ["Receipt No", "Date", "Donor Name", "Purpose", "Amount", "Payment Method", "Reference"],
-    },
-}
-
-
-# ------------------------------
-# SESSION STATE
-# ------------------------------
-if "sheets" not in st.session_state:
-    st.session_state.sheets = OrderedDict({"Data": pd.DataFrame()})
+st.session_state.sheets = OrderedDict({"Data": pd.DataFrame()})
 if "active_sheet" not in st.session_state:
     st.session_state.active_sheet = "Data"
 if "ai_result" not in st.session_state:
@@ -856,6 +671,7 @@ elif page == "🌐 Universal Data Workspace":
             )
             st.session_state.sheets[current_name] = clean_df(edited)
             current = active_df()
+
             overview_tab, quality_tab, analysis_tab = st.tabs(
                 ["📋 Overview", "🧹 Data Quality", "📈 Analysis"]
             )
