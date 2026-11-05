@@ -96,27 +96,16 @@ def clean_df(df):
 
 def detect_header_row(raw_df, max_rows=15):
     """
-    Estimate a header row from the first rows of a worksheet.
-    This is a best-effort heuristic; users can inspect and edit headings later.
+    Use the first non-empty worksheet row as the column headings.
+    The exported workbook then writes those headings into Excel row 1.
     """
     if raw_df is None or raw_df.empty:
         return 0
-    best_row, best_score = 0, -1
     for row_index in range(min(len(raw_df), max_rows)):
         row = raw_df.iloc[row_index].tolist()
-        values = [v for v in row if not pd.isna(v) and str(v).strip() != ""]
-        if not values:
-            continue
-        text_count = sum(isinstance(v, str) for v in values)
-        unique_count = len({str(v).strip().casefold() for v in values})
-        nonempty = len(values)
-        # Headers are commonly text-heavy and contain distinct labels.
-        score = nonempty * 2 + (text_count / nonempty) * 3 + (unique_count / nonempty)
-        # Prefer earlier rows when scores are close.
-        score -= row_index * 0.025
-        if score > best_score:
-            best_row, best_score = row_index, score
-    return best_row
+        if any(not pd.isna(value) and str(value).strip() for value in row):
+            return row_index
+    return 0
 
 
 def dataframe_from_raw(raw_df):
