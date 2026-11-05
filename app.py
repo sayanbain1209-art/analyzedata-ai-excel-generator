@@ -259,19 +259,21 @@ def export_headers_for_sheet(sheet_name, df):
 
 
 def make_excel(sheets):
-    """Create a formatted multi-sheet Excel workbook with visible headings."""
+    """
+    Export every worksheet with its subject-specific column headings in Excel row 1.
+    Data always begins in row 2. No fixed Employee-only headings are used.
+    """
     if isinstance(sheets, pd.DataFrame):
         sheets = {"Data": sheets}
 
     output = io.BytesIO()
     workbook = Workbook()
-    default_sheet = workbook.active
-    workbook.remove(default_sheet)
+    workbook.remove(workbook.active)
 
     used_sheet_names = set()
     for original_name, source_df in sheets.items():
         df = clean_df(source_df)
-        base_name = re.sub(r"[\[\]:*?/\\]", "_", str(original_name)).strip() or "Data"
+        base_name = re.sub(r"[\\[\\]:*?/\\\\]", "_", str(original_name)).strip() or "Data"
         base_name = base_name[:31]
         sheet_name = base_name
         suffix = 2
@@ -289,21 +291,33 @@ def make_excel(sheets):
 
         if len(df.columns) == 0:
             ws.cell(row=1, column=1, value="No columns")
+            ws.freeze_panes = "A2"
             continue
 
+        # Use the actual column names for this dataset, whatever its subject is.
         headers = export_headers_for_sheet(original_name, df)
+        headers = [str(value).strip() if value is not None else "" for value in headers]
+        headers = [
+            heading if heading else f"Field {index}"
+            for index, heading in enumerate(headers, start=1)
+        ]
+
+        # Write row 1 explicitly before writing any records.
         for col_num, heading in enumerate(headers, start=1):
-            cell = ws.cell(row=1, column=col_num, value=str(heading))
-            cell.font = Font(name="Arial", bold=True, color="FFFFFF", size=11)
-            cell.fill = PatternFill(fill_type="solid", fgColor="1F4E78")
+            cell = ws.cell(row=1, column=col_num)
+            cell.value = heading
+            # Dark text + light fill remains readable in mobile spreadsheet viewers.
+            cell.font = Font(name="Arial", bold=True, color="17365D", size=11)
+            cell.fill = PatternFill(fill_type="solid", fgColor="D9EAF7")
             cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
             cell.border = Border(
-                top=Side(style="thin", color="1F1F1F"),
-                bottom=Side(style="medium", color="1F1F1F"),
-                left=Side(style="thin", color="D9E2F3"),
-                right=Side(style="thin", color="D9E2F3"),
+                top=Side(style="thin", color="7F9DB9"),
+                bottom=Side(style="medium", color="1F4E78"),
+                left=Side(style="thin", color="B8CDE0"),
+                right=Side(style="thin", color="B8CDE0"),
             )
 
+        # All data records start at row 2; preserve the dataset's own column order.
         for row_num, record in enumerate(df.itertuples(index=False, name=None), start=2):
             for col_num, value in enumerate(record, start=1):
                 if pd.isna(value):
@@ -312,51 +326,43 @@ def make_excel(sheets):
                     value = value.to_pydatetime()
                 ws.cell(row=row_num, column=col_num, value=value)
 
-        ws.row_dimensions[1].height = 30
+        ws.row_dimensions[1].height = 32
         ws.freeze_panes = "A2"
+        ws.auto_filter.ref = f"A1:{get_column_letter(len(headers))}{max(ws.max_row, 1)}"
+
         for col_num, heading in enumerate(headers, start=1):
             letter = get_column_letter(col_num)
             longest = max(
                 (len(str(v)) for v in df.iloc[:, col_num - 1].dropna().head(500)),
                 default=0,
             )
-            ws.column_dimensions[letter].width = min(max(len(str(heading)) + 3, longest + 2, 14), 36)
+            ws.column_dimensions[letter].width = min(
+                max(len(str(heading)) + 3, longest + 2, 14), 36
+            )
 
         for row in ws.iter_rows(min_row=2, max_row=ws.max_row):
             for cell in row:
                 cell.alignment = Alignment(vertical="center", wrap_text=False)
                 cell.border = Border(bottom=Side(style="thin", color="D8E3F0"))
 
-        # Final guard: every exported column gets a non-empty heading in row 1.
-        for col_num in range(1, ws.max_column + 1):
-            heading_cell = ws.cell(row=1, column=col_num)
-            if heading_cell.value is None or not str(heading_cell.value).strip():
-                heading_cell.value = f"Column_{col_num}"
-                heading_cell.font = Font(name="Arial", bold=True, color="FFFFFF", size=11)
-                heading_cell.fill = PatternFill(fill_type="solid", fgColor="1F4E78")
-                heading_cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-        if ws.max_row >= 2 and ws.max_column >= 1:
-            table = Table(displayName=f"Table{len(used_sheet_names)}", ref=ws.dimensions)
-            table.tableStyleInfo = TableStyleInfo(
-                name="TableStyleMedium2",
-                showFirstColumn=False,
-                showLastColumn=False,
-                showRowStripes=True,
-                showColumnStripes=False,
-            )
-            ws.add_table(table)
+        # Verify every column has a visible, non-empty heading in row 1.
+        for col_num in range(1, len(headers) + 1):
+            if not str(ws.cell(row=1, column=col_num).value or "").strip():
+                raise ValueError(
+                    f"Excel export validation failed: blank heading in {sheet_name}, column {col_num}."
+                )
 
     if not workbook.sheetnames:
         workbook.create_sheet("Data")
     workbook.save(output)
     excel_bytes = output.getvalue()
 
-    # Verify that exported worksheets retain their first-row headings.
+    # Re-open the actual XLSX bytes and verify row 1 + row 2 placement.
     check = load_workbook(io.BytesIO(excel_bytes), read_only=False, data_only=False)
     for ws in check.worksheets:
         if ws.max_column > 0:
             for col_num in range(1, ws.max_column + 1):
-                value = ws.cell(1, col_num).value
+                value = ws.cell(row=1, column=col_num).value
                 if value is None or not str(value).strip():
                     check.close()
                     raise ValueError(
