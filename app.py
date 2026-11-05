@@ -238,28 +238,24 @@ def data_profile(df):
 
 
 def make_excel(sheets):
-    """Create a formatted multi-sheet Excel workbook with visible headings."""
+    """Create a formatted multi-sheet workbook; row 1 is always the heading row."""
     if isinstance(sheets, pd.DataFrame):
         sheets = {"Data": sheets}
-
     output = io.BytesIO()
     workbook = Workbook()
-    default_sheet = workbook.active
-    workbook.remove(default_sheet)
+    workbook.remove(workbook.active)
+    used_sheet_names, expected_headers = set(), {}
 
-    used_sheet_names = set()
     for original_name, source_df in sheets.items():
         df = clean_df(source_df)
         base_name = re.sub(r"[\[\]:*?/\\]", "_", str(original_name)).strip() or "Data"
         base_name = base_name[:31]
-        sheet_name = base_name
-        suffix = 2
+        sheet_name, suffix = base_name, 2
         while sheet_name.casefold() in used_sheet_names:
             tail = f"_{suffix}"
             sheet_name = base_name[:31 - len(tail)] + tail
             suffix += 1
         used_sheet_names.add(sheet_name.casefold())
-
         ws = workbook.create_sheet(title=sheet_name)
         ws.sheet_state = "visible"
         ws.sheet_view.showGridLines = True
@@ -267,12 +263,25 @@ def make_excel(sheets):
         ws.sheet_view.zoomScale = 90
 
         if len(df.columns) == 0:
-            ws.cell(row=1, column=1, value="No columns")
+            ws["A1"] = "No columns"
+            expected_headers[sheet_name] = ["No columns"]
             continue
 
         headers = unique_headers(list(df.columns))
+        expected_headers[sheet_name] = headers
+
+        # Write data first; write headings last so row 1 is explicitly restored.
+        for row_num, record in enumerate(df.itertuples(index=False, name=None), start=2):
+            for col_num, value in enumerate(record, start=1):
+                if pd.isna(value):
+                    value = None
+                if hasattr(value, "to_pydatetime"):
+                    value = value.to_pydatetime()
+                ws.cell(row=row_num, column=col_num, value=value)
+
         for col_num, heading in enumerate(headers, start=1):
-            cell = ws.cell(row=1, column=col_num, value=str(heading))
+            cell = ws.cell(row=1, column=col_num)
+            cell.value = str(heading)
             cell.font = Font(name="Arial", bold=True, color="FFFFFF", size=11)
             cell.fill = PatternFill(fill_type="solid", fgColor="1F4E78")
             cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
@@ -282,14 +291,6 @@ def make_excel(sheets):
                 left=Side(style="thin", color="D9E2F3"),
                 right=Side(style="thin", color="D9E2F3"),
             )
-
-        for row_num, record in enumerate(df.itertuples(index=False, name=None), start=2):
-            for col_num, value in enumerate(record, start=1):
-                if pd.isna(value):
-                    value = None
-                if hasattr(value, "to_pydatetime"):
-                    value = value.to_pydatetime()
-                ws.cell(row=row_num, column=col_num, value=value)
 
         ws.row_dimensions[1].height = 30
         ws.freeze_panes = "A2"
@@ -306,42 +307,33 @@ def make_excel(sheets):
                 cell.alignment = Alignment(vertical="center", wrap_text=False)
                 cell.border = Border(bottom=Side(style="thin", color="D8E3F0"))
 
-        # Final guard: every exported column gets a non-empty heading in row 1.
-        for col_num in range(1, ws.max_column + 1):
-            heading_cell = ws.cell(row=1, column=col_num)
-            if heading_cell.value is None or not str(heading_cell.value).strip():
-                heading_cell.value = f"Column_{col_num}"
-                heading_cell.font = Font(name="Arial", bold=True, color="FFFFFF", size=11)
-                heading_cell.fill = PatternFill(fill_type="solid", fgColor="1F4E78")
-                heading_cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        # Plain AutoFilter instead of an Excel Table for mobile-viewer compatibility.
         if ws.max_row >= 2 and ws.max_column >= 1:
-            table = Table(displayName=f"Table{len(used_sheet_names)}", ref=ws.dimensions)
-            table.tableStyleInfo = TableStyleInfo(
-                name="TableStyleMedium2",
-                showFirstColumn=False,
-                showLastColumn=False,
-                showRowStripes=True,
-                showColumnStripes=False,
-            )
-            ws.add_table(table)
+            ws.auto_filter.ref = f"A1:{get_column_letter(ws.max_column)}{ws.max_row}"
 
     if not workbook.sheetnames:
-        workbook.create_sheet("Data")
+        ws = workbook.create_sheet("Data")
+        ws["A1"] = "No columns"
+        expected_headers["Data"] = ["No columns"]
+
     workbook.save(output)
     excel_bytes = output.getvalue()
-
-    # Verify that exported worksheets retain their first-row headings.
     check = load_workbook(io.BytesIO(excel_bytes), read_only=False, data_only=False)
-    for ws in check.worksheets:
-        if ws.max_column > 0 and ws.max_row > 0:
-            if ws.cell(1, 1).value is None:
-                check.close()
-                raise ValueError("Excel export validation failed: heading row is empty.")
-    check.close()
+    try:
+        for sheet_name, headers in expected_headers.items():
+            ws = check[sheet_name]
+            for col_num, expected in enumerate(headers, start=1):
+                actual = ws.cell(row=1, column=col_num).value
+                if actual != expected:
+                    raise ValueError(
+                        f"Excel export validation failed on {sheet_name}! "
+                        f"Row 1, column {col_num}: expected {expected!r}, got {actual!r}."
+                    )
+    finally:
+        check.close()
     return excel_bytes
 
-
-# ------------------------------
+#------------------------------
 # GEMINI AI
 # ------------------------------
 def gemini_answer(prompt, df):
@@ -762,7 +754,7 @@ elif page == "🌐 Universal Data Workspace":
                 placeholder="এই data-এর summary দিন, missing value বা unusual record খুঁজুন...",
                 key="gemini_question",
             )
-            if st.button("Ask Gemini AI"):
+            if st.button("Ask GeminiAI"):
                 if question.strip():
                     with st.spinner("AI বিশ্লেষণ করছে..."):
                         try:
