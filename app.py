@@ -344,6 +344,19 @@ def make_excel(sheets):
                 max(heading_width, longest + 2, 16), 42
             )
 
+        # Apply subtle Excel-like gridlines to every populated cell.
+        # Preserve the existing subject-specific Row 1 headings and their formatting.
+        light_grid = Side(style="thin", color="D9D9D9")
+        for row in ws.iter_rows(min_row=1, max_row=ws.max_row,
+                                min_col=1, max_col=ws.max_column):
+            for cell in row:
+                cell.border = Border(
+                    left=light_grid,
+                    right=light_grid,
+                    top=light_grid,
+                    bottom=light_grid,
+                )
+
         for row in ws.iter_rows(min_row=2, max_row=ws.max_row):
             for cell in row:
                 cell.alignment = Alignment(vertical="center", wrap_text=False)
